@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Foco no Estudo</title>
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand-lockup" aria-label="Foco no Estudo">
+          <svg class="brand-mark" viewBox="0 0 48 48" role="img" aria-label="Logo Foco no Estudo">
+            <rect x="5" y="7" width="38" height="34" rx="10"></rect>
+            <path d="M15 30V17c4 0 7 1 9 4 2-3 5-4 9-4v13c-4 0-7 1-9 4-2-3-5-4-9-4Z"></path>
+            <path d="M24 21v13"></path>
+            <path class="brand-spark" d="M13 11c5-4 16-5 23 2"></path>
+          </svg>
+          <div>
+            <p class="app-name">Foco no Estudo</p>
+            <h1 id="projectName">Contador de Estudos</h1>
+          </div>
+        </div>
+        <button class="ghost-button" id="settingsButton" type="button" title="Configurações">
+          <span>⚙</span>
+        </button>
+      </header>
+
+      <section class="hero-grid">
+        <div class="focus-panel">
+          <div class="focus-heading">
+            <div>
+              <p class="eyebrow">Meta diaria</p>
+              <h2>Foco de hoje</h2>
+            </div>
+            <span class="live-pill" id="currentSubjectBadge">Timer pausado</span>
+          </div>
+
+          <div class="gauge-wrap">
+            <canvas id="gaugeCanvas" width="360" height="260" aria-label="Progresso da meta diária"></canvas>
+            <div class="gauge-readout">
+              <strong id="dailyPercent">0%</strong>
+              <span id="dailyTime">0min de 0min</span>
+            </div>
+          </div>
+
+          <div class="focus-stats" aria-label="Resumo do foco atual">
+            <div>
+              <span>Sessao atual</span>
+              <strong id="sessionElapsed">0s</strong>
+            </div>
+            <div>
+              <span>Para a meta</span>
+              <strong id="remainingTime">0min</strong>
+            </div>
+          </div>
+
+          <div class="timer-row">
+            <div>
+              <p class="eyebrow">Disciplina atual</p>
+              <select id="subjectSelect"></select>
+            </div>
+            <button class="primary-button" id="timerButton" type="button">Iniciar</button>
+          </div>
+
+          <p class="status-line" id="statusLine">Selecione uma disciplina para começar.</p>
+        </div>
+
+        <aside class="summary-panel">
+          <div>
+            <p class="eyebrow">Meta total</p>
+            <div class="project-progress">
+              <div>
+                <strong id="totalProgressText">0h de 0h</strong>
+                <span id="totalPercent">0%</span>
+              </div>
+              <div class="progress-track">
+                <span id="totalProgressBar"></span>
+              </div>
+            </div>
+          </div>
+          <div>
+            <p class="eyebrow">Hoje por disciplina</p>
+            <div class="subject-list" id="todaySubjects"></div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="reports-section">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">Resumo</p>
+            <h2>Horas estudadas</h2>
+          </div>
+          <div class="segmented" role="tablist" aria-label="Período">
+            <button class="active" data-period="today" type="button">Dia</button>
+            <button data-period="week" type="button">Semana</button>
+            <button data-period="month" type="button">Mês</button>
+            <button data-period="total" type="button">Total</button>
+          </div>
+        </div>
+
+        <div class="report-metrics" aria-label="Indicadores do periodo">
+          <div class="metric-card">
+            <span>Total</span>
+            <strong id="reportTotal">0s</strong>
+          </div>
+          <div class="metric-card">
+            <span>Media diaria</span>
+            <strong id="reportAverage">0s</strong>
+          </div>
+          <div class="metric-card">
+            <span>Melhor dia</span>
+            <strong id="reportBestDay">-</strong>
+          </div>
+          <div class="metric-card">
+            <span>Mais estudada</span>
+            <strong id="reportTopSubject">-</strong>
+          </div>
+        </div>
+
+        <div class="charts-grid">
+          <div class="chart-panel">
+            <h3>Por dia</h3>
+            <canvas id="barChart" width="640" height="300"></canvas>
+          </div>
+          <div class="chart-panel">
+            <h3>Por disciplina</h3>
+            <canvas id="donutChart" width="420" height="300"></canvas>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Disciplina</th>
+                <th>Horas</th>
+                <th>Participação</th>
+              </tr>
+            </thead>
+            <tbody id="subjectsTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="settingsDialog">
+      <form method="dialog" class="settings-form">
+        <div class="dialog-header">
+          <h2>Configurações</h2>
+          <button class="ghost-button" value="cancel" type="submit">×</button>
+        </div>
+
+        <label>
+          Nome do projeto
+          <input id="projectInput" type="text" required>
+        </label>
+        <div class="form-grid">
+          <label>
+            Meta diária em horas
+            <input id="dailyGoalInput" min="0.25" step="0.25" type="number" required>
+          </label>
+          <label>
+            Meta total em horas
+            <input id="totalGoalInput" min="1" step="1" type="number" required>
+          </label>
+        </div>
+
+        <div class="subject-editor">
+          <div class="section-header compact">
+            <h3>Disciplinas</h3>
+            <button id="addSubjectButton" class="secondary-button" type="button">Adicionar</button>
+          </div>
+          <div id="subjectEditorList"></div>
+        </div>
+
+        <menu>
+          <button class="danger-button" id="resetButton" type="button">Resetar tudo</button>
+          <span class="menu-spacer"></span>
+          <button class="secondary-button" value="cancel" type="submit">Cancelar</button>
+          <button class="primary-button" id="saveSettingsButton" value="default" type="button">Salvar</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
