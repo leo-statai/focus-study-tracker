@@ -3,13 +3,25 @@ const state = {
   selectedSubjectId: null,
   period: "week",
   report: null,
+  lastTodaySeconds: null,
+  goalCelebrated: false,
+  audioContext: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
+
+const clientTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+
 const api = async (path, options = {}) => {
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Client-Time-Zone": clientTimeZone(),
+    "X-Client-Timezone-Offset": String(new Date().getTimezoneOffset()),
+    ...(options.headers || {}),
+  };
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers,
   });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "Erro inesperado");
@@ -203,6 +215,79 @@ function roundRect(ctx, x, y, width, height, radius) {
   ctx.closePath();
 }
 
+function unlockAudio() {
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) return;
+  if (!state.audioContext) state.audioContext = new AudioContext();
+  if (state.audioContext.state === "suspended") state.audioContext.resume();
+}
+
+function playGoalSound() {
+  unlockAudio();
+  const audio = state.audioContext;
+  if (!audio) return;
+
+  const now = audio.currentTime;
+  const notes = [
+    { frequency: 523.25, start: 0, duration: 0.16 },
+    { frequency: 659.25, start: 0.13, duration: 0.18 },
+    { frequency: 783.99, start: 0.3, duration: 0.32 },
+  ];
+
+  notes.forEach((note) => {
+    const oscillator = audio.createOscillator();
+    const gain = audio.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(note.frequency, now + note.start);
+    gain.gain.setValueAtTime(0.0001, now + note.start);
+    gain.gain.exponentialRampToValueAtTime(0.16, now + note.start + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + note.start + note.duration);
+    oscillator.connect(gain).connect(audio.destination);
+    oscillator.start(now + note.start);
+    oscillator.stop(now + note.start + note.duration + 0.03);
+  });
+}
+
+function triggerGoalCelebration() {
+  playGoalSound();
+  const panel = $(".focus-panel");
+  const burst = $("#goalCelebration");
+  panel.classList.remove("goal-celebration");
+  burst.innerHTML = "";
+
+  for (let index = 0; index < 24; index += 1) {
+    const piece = document.createElement("span");
+    piece.style.setProperty("--x", `${Math.random() * 220 - 110}px`);
+    piece.style.setProperty("--y", `${Math.random() * -120 - 44}px`);
+    piece.style.setProperty("--r", `${Math.random() * 240 - 120}deg`);
+    piece.style.setProperty("--delay", `${Math.random() * 0.16}s`);
+    piece.style.setProperty("--color", ["#176b5b", "#d9993f", "#2f80ed", "#1f9d63"][index % 4]);
+    burst.appendChild(piece);
+  }
+
+  requestAnimationFrame(() => panel.classList.add("goal-celebration"));
+  $("#statusLine").textContent = "Meta diária atingida. Bom trabalho!";
+  window.setTimeout(() => {
+    panel.classList.remove("goal-celebration");
+    burst.innerHTML = "";
+  }, 1700);
+}
+
+function maybeCelebrateDailyGoal(todaySeconds, goalSeconds) {
+  const previous = state.lastTodaySeconds;
+  state.lastTodaySeconds = todaySeconds;
+
+  if (!goalSeconds || previous === null) return;
+  if (todaySeconds < goalSeconds) {
+    state.goalCelebrated = false;
+    return;
+  }
+  if (!state.goalCelebrated && previous < goalSeconds && todaySeconds >= goalSeconds) {
+    state.goalCelebrated = true;
+    triggerGoalCelebration();
+  }
+}
+
 function renderState() {
   const data = state.data;
   const project = data.project;
@@ -234,6 +319,7 @@ function renderState() {
   renderSubjectSelect();
   renderTodaySubjects();
   drawGauge(dailyPercent);
+  maybeCelebrateDailyGoal(todaySeconds, dailyGoalSeconds);
 }
 
 function renderSubjectSelect() {
@@ -369,6 +455,7 @@ $("#subjectSelect").addEventListener("change", async (event) => {
 });
 
 $("#timerButton").addEventListener("click", async () => {
+  unlockAudio();
   const running = state.data.running_session;
   const path = running ? "/api/timer/pause" : "/api/timer/start";
   const body = running ? {} : { subject_id: state.selectedSubjectId };

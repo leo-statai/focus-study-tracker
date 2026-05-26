@@ -12,6 +12,7 @@
   --danger: #bd3f32;
   --success-soft: rgba(31, 157, 99, 0.12);
   --warning-soft: rgba(217, 153, 63, 0.14);
+  --celebration: rgba(31, 157, 99, 0.24);
   --shadow: 0 18px 50px rgba(26, 39, 34, 0.08);
 }
 
@@ -155,6 +156,10 @@ dialog {
   border-color: rgba(23, 107, 91, 0.32);
 }
 
+.focus-panel.goal-celebration {
+  animation: panelCelebrate 1.35s ease;
+}
+
 .focus-heading {
   align-items: start;
 }
@@ -191,6 +196,7 @@ dialog {
 .gauge-wrap {
   display: grid;
   min-height: 250px;
+  overflow: hidden;
   place-items: center;
   position: relative;
 }
@@ -221,6 +227,28 @@ dialog {
 .focus-stats span,
 .metric-card span {
   color: var(--muted);
+}
+
+.celebration-bursts {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.celebration-bursts span {
+  position: absolute;
+  left: 50%;
+  top: 56%;
+  width: 8px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--color);
+  opacity: 0;
+  transform: translate(-50%, -50%);
+}
+
+.goal-celebration .celebration-bursts span {
+  animation: confettiPop 1.05s cubic-bezier(0.18, 0.72, 0.28, 1) var(--delay) forwards;
 }
 
 .focus-stats {
@@ -608,4 +636,35 @@ menu {
     padding: 12px 10px;
   }
 }
+
+@keyframes panelCelebrate {
+  0%,
+  100% {
+    box-shadow: var(--shadow);
+  }
+
+  22% {
+    border-color: rgba(31, 157, 99, 0.62);
+    box-shadow: 0 18px 52px rgba(26, 39, 34, 0.08), 0 0 0 8px var(--celebration);
+  }
+}
+
+@keyframes confettiPop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.6) rotate(0);
+  }
+
+  12% {
+    opacity: 1;
+  }
+
+  82% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--x)), calc(-50% + var(--y))) scale(1) rotate(var(--r));
+  }
 }

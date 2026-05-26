@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -15,33 +16,56 @@ DATA_DIR = Path(os.environ.get("APP_DATA_DIR", BASE_DIR / "data"))
 DB_PATH = Path(os.environ.get("APP_DB_PATH", DATA_DIR / "estudos.sqlite"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8000"))
-LOCAL_TZ = datetime.now().astimezone().tzinfo or timezone.utc
+SERVER_TZ = datetime.now().astimezone().tzinfo or timezone.utc
+UTC = timezone.utc
 
 
-def now_local():
-    return datetime.now(LOCAL_TZ).replace(microsecond=0)
+def now_in(tz):
+    return datetime.now(tz).replace(microsecond=0)
 
 
-def parse_dt(value):
+def now_utc():
+    return datetime.now(UTC).replace(microsecond=0)
+
+
+def request_timezone(headers):
+    zone_name = (headers.get("X-Client-Time-Zone") or "").strip()
+    if zone_name:
+        try:
+            return ZoneInfo(zone_name)
+        except ZoneInfoNotFoundError:
+            pass
+
+    offset = (headers.get("X-Client-Timezone-Offset") or "").strip()
+    if offset:
+        try:
+            minutes = int(offset)
+            return timezone(timedelta(minutes=-minutes))
+        except ValueError:
+            pass
+    return SERVER_TZ
+
+
+def parse_dt(value, tz=SERVER_TZ):
     if not value:
         return None
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=LOCAL_TZ)
-    return parsed.astimezone(LOCAL_TZ)
+        parsed = parsed.replace(tzinfo=SERVER_TZ)
+    return parsed.astimezone(tz)
 
 
-def iso(dt):
-    return dt.astimezone(LOCAL_TZ).replace(microsecond=0).isoformat()
+def iso_utc(dt):
+    return dt.astimezone(UTC).replace(microsecond=0).isoformat()
 
 
-def today_bounds():
-    start = now_local().replace(hour=0, minute=0, second=0)
+def today_bounds(tz):
+    start = now_in(tz).replace(hour=0, minute=0, second=0)
     return start, start + timedelta(days=1)
 
 
-def period_bounds(period):
-    current = now_local()
+def period_bounds(period, tz):
+    current = now_in(tz)
     day_start = current.replace(hour=0, minute=0, second=0)
     if period == "today":
         return day_start, day_start + timedelta(days=1)
@@ -103,7 +127,7 @@ def init_db():
         )
         project = conn.execute("SELECT id FROM projects WHERE active = 1 LIMIT 1").fetchone()
         if not project:
-            created = iso(now_local())
+            created = iso_utc(now_utc())
             cur = conn.execute(
                 """
                 INSERT INTO projects (name, daily_goal_minutes, total_goal_minutes, created_at)
@@ -148,27 +172,28 @@ def active_session(conn, project_id):
     ).fetchone()
 
 
-def close_active_session(conn, project_id, end_time=None):
+def close_active_session(conn, project_id, end_time=None, tz=SERVER_TZ):
     session = active_session(conn, project_id)
     if not session:
         return None
-    end_time = end_time or now_local()
-    started = parse_dt(session["started_at"])
+    end_time = end_time or now_utc()
+    end_time = end_time.astimezone(tz)
+    started = parse_dt(session["started_at"], tz)
     if end_time < started:
         end_time = started
     conn.execute(
         "UPDATE study_sessions SET ended_at = ? WHERE id = ?",
-        (iso(end_time), session["id"]),
+        (iso_utc(end_time), session["id"]),
     )
     return session
 
 
-def session_segments(rows, start_bound=None, end_bound=None):
-    current = now_local()
+def session_segments(rows, start_bound=None, end_bound=None, tz=SERVER_TZ):
+    current = now_in(tz)
     segments = []
     for row in rows:
-        started = parse_dt(row["started_at"])
-        ended = parse_dt(row["ended_at"]) or current
+        started = parse_dt(row["started_at"], tz)
+        ended = parse_dt(row["ended_at"], tz) or current
         if end_bound and started >= end_bound:
             continue
         if start_bound and ended <= start_bound:
@@ -194,8 +219,8 @@ def session_segments(rows, start_bound=None, end_bound=None):
     return segments
 
 
-def report_data(conn, project_id, period):
-    start, end = period_bounds(period)
+def report_data(conn, project_id, period, tz=SERVER_TZ):
+    start, end = period_bounds(period, tz)
     rows = conn.execute(
         """
         SELECT ss.*, s.name AS subject_name, s.color AS subject_color
@@ -206,7 +231,7 @@ def report_data(conn, project_id, period):
         """,
         (project_id,),
     ).fetchall()
-    segments = session_segments(rows, start, end)
+    segments = session_segments(rows, start, end, tz)
     by_subject = {}
     by_day = {}
     total_seconds = 0
@@ -240,7 +265,7 @@ def report_data(conn, project_id, period):
     }
 
 
-def state_data(conn):
+def state_data(conn, tz=SERVER_TZ):
     project = active_project(conn)
     project_id = project["id"]
     subjects = conn.execute(
@@ -248,14 +273,15 @@ def state_data(conn):
         (project_id,),
     ).fetchall()
     running = active_session(conn, project_id)
-    today = report_data(conn, project_id, "today")
-    total = report_data(conn, project_id, "total")
+    today = report_data(conn, project_id, "today", tz)
+    total = report_data(conn, project_id, "total", tz)
     return {
         "project": dict(project),
         "subjects": [dict(row) for row in subjects],
         "running_session": dict(running) if running else None,
         "today": today,
         "total": total,
+        "timezone": getattr(tz, "key", None) or str(tz),
     }
 
 
@@ -270,6 +296,9 @@ def read_json(handler):
 class AppHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print("[%s] %s" % (self.log_date_time_string(), fmt % args))
+
+    def client_timezone(self):
+        return request_timezone(self.headers)
 
     def send_json(self, payload, status=200):
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -286,7 +315,7 @@ class AppHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/state":
             with connect() as conn:
-                self.send_json(state_data(conn))
+                self.send_json(state_data(conn, self.client_timezone()))
             return
         if parsed.path == "/api/reports":
             period = parse_qs(parsed.query).get("period", ["today"])[0]
@@ -295,7 +324,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
             with connect() as conn:
                 project = active_project(conn)
-                self.send_json(report_data(conn, project["id"], period))
+                self.send_json(report_data(conn, project["id"], period, self.client_timezone()))
             return
         self.serve_static(parsed.path)
 
@@ -356,7 +385,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 """,
                 (name, daily_goal_minutes, total_goal_minutes, project["id"]),
             )
-            self.send_json(state_data(conn))
+            self.send_json(state_data(conn, self.client_timezone()))
 
     def create_subject(self, payload):
         name = str(payload.get("name", "")).strip()
@@ -370,9 +399,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 INSERT INTO subjects (project_id, name, color, created_at)
                 VALUES (?, ?, ?, ?)
                 """,
-                (project["id"], name, color, iso(now_local())),
+                (project["id"], name, color, iso_utc(now_utc())),
             )
-            self.send_json({"subject_id": cur.lastrowid, "state": state_data(conn)}, 201)
+            self.send_json({"subject_id": cur.lastrowid, "state": state_data(conn, self.client_timezone())}, 201)
 
     def update_subject(self, path, payload):
         subject_id = int(path.rstrip("/").split("/")[-1])
@@ -391,7 +420,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 """,
                 (name, color, active, subject_id, project["id"]),
             )
-            self.send_json(state_data(conn))
+            self.send_json(state_data(conn, self.client_timezone()))
 
     def delete_subject(self, path):
         subject_id = int(path.rstrip("/").split("/")[-1])
@@ -403,17 +432,17 @@ class AppHandler(BaseHTTPRequestHandler):
             ).fetchone()
             if not subject:
                 raise ValueError("Disciplina não encontrada")
-            close_active_session(conn, project["id"])
+            close_active_session(conn, project["id"], tz=self.client_timezone())
             conn.execute("DELETE FROM study_sessions WHERE subject_id = ? AND project_id = ?", (subject_id, project["id"]))
             conn.execute("DELETE FROM subjects WHERE id = ? AND project_id = ?", (subject_id, project["id"]))
-            self.send_json(state_data(conn))
+            self.send_json(state_data(conn, self.client_timezone()))
 
     def reset_app(self):
         if DB_PATH.exists():
             DB_PATH.unlink()
         init_db()
         with connect() as conn:
-            self.send_json(state_data(conn))
+            self.send_json(state_data(conn, self.client_timezone()))
 
     def start_timer(self, payload):
         subject_id = int(payload.get("subject_id") or 0)
@@ -433,15 +462,15 @@ class AppHandler(BaseHTTPRequestHandler):
                     INSERT INTO study_sessions (project_id, subject_id, started_at)
                     VALUES (?, ?, ?)
                     """,
-                    (project["id"], subject_id, iso(now_local())),
+                    (project["id"], subject_id, iso_utc(now_utc())),
                 )
-            self.send_json(state_data(conn))
+            self.send_json(state_data(conn, self.client_timezone()))
 
     def pause_timer(self):
         with connect() as conn:
             project = active_project(conn)
-            close_active_session(conn, project["id"])
-            self.send_json(state_data(conn))
+            close_active_session(conn, project["id"], tz=self.client_timezone())
+            self.send_json(state_data(conn, self.client_timezone()))
 
     def switch_timer(self, payload):
         subject_id = int(payload.get("subject_id") or 0)
@@ -457,16 +486,16 @@ class AppHandler(BaseHTTPRequestHandler):
                 raise ValueError("Disciplina inválida")
             running = active_session(conn, project["id"])
             if running and running["subject_id"] != subject_id:
-                timestamp = now_local()
-                close_active_session(conn, project["id"], timestamp)
+                timestamp = now_utc()
+                close_active_session(conn, project["id"], timestamp, self.client_timezone())
                 conn.execute(
                     """
                     INSERT INTO study_sessions (project_id, subject_id, started_at)
                     VALUES (?, ?, ?)
                     """,
-                    (project["id"], subject_id, iso(timestamp)),
+                    (project["id"], subject_id, iso_utc(timestamp)),
                 )
-            self.send_json(state_data(conn))
+            self.send_json(state_data(conn, self.client_timezone()))
 
     def serve_static(self, path):
         if path in {"", "/"}:
