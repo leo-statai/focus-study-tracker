@@ -49,7 +49,7 @@ const css = (name) => getComputedStyle(document.documentElement).getPropertyValu
 
 const sessionSeconds = (session) => {
   if (!session) return 0;
-  const started = new Date(session.started_at).getTime();
+  const started = new Date(session.logical_started_at || session.started_at).getTime();
   if (Number.isNaN(started)) return 0;
   return Math.max(0, Math.floor((Date.now() - started) / 1000));
 };
@@ -313,7 +313,7 @@ function renderState() {
   $("#totalProgressBar").style.width = `${Math.min(totalPercent, 100)}%`;
   $("#timerButton").textContent = running ? "Pausar" : "Iniciar";
   $("#statusLine").textContent = running
-    ? `Estudando ${running.subject_name} desde ${new Date(running.started_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}.`
+    ? `Estudando ${running.subject_name} desde ${new Date(running.logical_started_at || running.started_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}.`
     : "Timer pausado. Selecione uma disciplina e inicie quando estiver pronto.";
 
   renderSubjectSelect();
