@@ -3,6 +3,8 @@ import json
 import mimetypes
 import os
 import sqlite3
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,6 +20,7 @@ HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8000"))
 SERVER_TZ = datetime.now().astimezone().tzinfo or timezone.utc
 UTC = timezone.utc
+CHECKPOINT_INTERVAL = int(os.environ.get("CHECKPOINT_INTERVAL", "300"))  # seconds
 
 
 def now_in(tz):
@@ -172,6 +175,28 @@ def active_session(conn, project_id):
     ).fetchone()
 
 
+def session_logical_start(conn, session):
+    # Walk the checkpoint chain backwards (each chunk's ended_at == next chunk's started_at)
+    # to find the original start of the current logical session.
+    row = conn.execute(
+        """
+        WITH RECURSIVE chain(id, started_at, ended_at, subject_id, project_id) AS (
+            SELECT id, started_at, ended_at, subject_id, project_id
+            FROM study_sessions WHERE id = ?
+            UNION ALL
+            SELECT ss.id, ss.started_at, ss.ended_at, ss.subject_id, ss.project_id
+            FROM study_sessions ss
+            JOIN chain c ON ss.ended_at = c.started_at
+                AND ss.project_id = c.project_id
+                AND ss.subject_id = c.subject_id
+        )
+        SELECT MIN(started_at) AS logical_started_at FROM chain
+        """,
+        (session["id"],),
+    ).fetchone()
+    return row["logical_started_at"] if row and row["logical_started_at"] else session["started_at"]
+
+
 def close_active_session(conn, project_id, end_time=None, tz=SERVER_TZ):
     session = active_session(conn, project_id)
     if not session:
@@ -275,10 +300,14 @@ def state_data(conn, tz=SERVER_TZ):
     running = active_session(conn, project_id)
     today = report_data(conn, project_id, "today", tz)
     total = report_data(conn, project_id, "total", tz)
+    running_dict = None
+    if running:
+        running_dict = dict(running)
+        running_dict["logical_started_at"] = session_logical_start(conn, running)
     return {
         "project": dict(project),
         "subjects": [dict(row) for row in subjects],
-        "running_session": dict(running) if running else None,
+        "running_session": running_dict,
         "today": today,
         "total": total,
         "timezone": getattr(tz, "key", None) or str(tz),
@@ -515,8 +544,51 @@ class AppHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+def recover_orphaned_sessions():
+    # Sessions with ended_at=NULL from a previous crash. Close at started_at so they
+    # carry zero duration and downtime is never counted as study time.
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id FROM study_sessions WHERE ended_at IS NULL"
+        ).fetchall()
+        if rows:
+            for row in rows:
+                conn.execute(
+                    "UPDATE study_sessions SET ended_at = started_at WHERE id = ?",
+                    (row["id"],),
+                )
+            print(f"[startup] {len(rows)} sessão(ões) interrompida(s) encerrada(s) (máx. {CHECKPOINT_INTERVAL // 60} min perdidos).")
+
+
+def _checkpoint_loop():
+    # Rotate active sessions every CHECKPOINT_INTERVAL seconds so the open session
+    # in the DB always covers at most CHECKPOINT_INTERVAL seconds. On crash, at most
+    # that many seconds of the last chunk are lost; everything before is safely closed.
+    while True:
+        time.sleep(CHECKPOINT_INTERVAL)
+        try:
+            with connect() as conn:
+                sessions = conn.execute(
+                    "SELECT id, project_id, subject_id FROM study_sessions WHERE ended_at IS NULL"
+                ).fetchall()
+                for session in sessions:
+                    stamp = iso_utc(now_utc())
+                    conn.execute(
+                        "UPDATE study_sessions SET ended_at = ? WHERE id = ?",
+                        (stamp, session["id"]),
+                    )
+                    conn.execute(
+                        "INSERT INTO study_sessions (project_id, subject_id, started_at) VALUES (?, ?, ?)",
+                        (session["project_id"], session["subject_id"], stamp),
+                    )
+        except Exception as exc:
+            print(f"[checkpoint] Erro: {exc}")
+
+
 def main():
     init_db()
+    recover_orphaned_sessions()
+    threading.Thread(target=_checkpoint_loop, daemon=True).start()
     server = ThreadingHTTPServer((HOST, PORT), AppHandler)
     print(f"Servidor iniciado em http://{HOST}:{PORT}")
     print(f"Banco de dados: {DB_PATH}")
