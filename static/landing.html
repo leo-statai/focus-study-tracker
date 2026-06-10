@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Foco no Estudo — Cada minuto de estudo te aproxima da sua conquista</title>
+    <meta name="description" content="Defina suas metas de estudo, cronometre sessões por disciplina e veja seu esforço diário virar progresso real rumo ao seu objetivo.">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <style>
+      :root {
+        --ink: #131c18;
+        --muted: #5f6f68;
+        --brand: #176b5b;
+        --brand-strong: #0e4a3e;
+        --brand-soft: #e7f2ee;
+        --accent: #d9993f;
+        --bg: #fbfcfa;
+        --card: #ffffff;
+        --line: #e6ece8;
+        --danger: #bd3f32;
+        --radius: 18px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background:
+          radial-gradient(1100px 520px at 85% -10%, rgba(23, 107, 91, 0.09), transparent 60%),
+          radial-gradient(900px 460px at -10% 30%, rgba(217, 153, 63, 0.07), transparent 55%),
+          var(--bg);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+        line-height: 1.6;
+      }
+
+      .container {
+        width: min(1120px, calc(100% - 48px));
+        margin: 0 auto;
+      }
+
+      h1, h2, h3, p {
+        margin: 0;
+      }
+
+      /* --- Nav --- */
+
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        background: rgba(251, 252, 250, 0.82);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 0;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        text-decoration: none;
+        color: var(--ink);
+      }
+
+      .brand-mark {
+        width: 36px;
+        height: 36px;
+        flex: 0 0 auto;
+      }
+
+      .brand-mark rect { fill: var(--brand); }
+      .brand-mark path { fill: none; stroke: #fff; stroke-linecap: round; stroke-linejoin: round; stroke-width: 3; }
+      .brand-mark .brand-spark { stroke: var(--accent); }
+
+      .brand-name {
+        font-size: 1.02rem;
+        font-weight: 800;
+        letter-spacing: -0.01em;
+      }
+
+      .nav-cta {
+        display: inline-flex;
+        align-items: center;
+        min-height: 40px;
+        padding: 0 22px;
+        border-radius: 999px;
+        background: var(--ink);
+        color: #fff;
+        font-weight: 700;
+        font-size: 0.92rem;
+        text-decoration: none;
+        transition: background 0.2s ease;
+      }
+
+      .nav-cta:hover {
+        background: var(--brand-strong);
+      }
+
+      /* --- Hero --- */
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.05fr) minmax(340px, 0.85fr);
+        gap: clamp(32px, 6vw, 72px);
+        align-items: center;
+        padding: clamp(48px, 9vh, 96px) 0 clamp(48px, 8vh, 88px);
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 14px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #fff;
+        color: var(--muted);
+        font-size: 0.8rem;
+        font-weight: 700;
+        margin-bottom: 22px;
+      }
+
+      .badge::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #1f9d63;
+      }
+
+      .headline {
+        font-size: clamp(2.3rem, 5.2vw, 3.5rem);
+        font-weight: 800;
+        letter-spacing: -0.035em;
+        line-height: 1.06;
+        margin-bottom: 20px;
+      }
+
+      .headline em {
+        font-style: normal;
+        background: linear-gradient(120deg, var(--brand) 20%, #1f9d63 80%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        color: transparent;
+      }
+
+      .sub {
+        color: var(--muted);
+        font-size: 1.1rem;
+        max-width: 46ch;
+        margin-bottom: 30px;
+      }
+
+      .checks {
+        display: grid;
+        gap: 13px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        color: var(--muted);
+        font-size: 0.98rem;
+      }
+
+      .checks li {
+        display: flex;
+        gap: 12px;
+        align-items: baseline;
+      }
+
+      .checks strong {
+        color: var(--ink);
+        font-weight: 700;
+      }
+
+      .checks li::before {
+        content: "✓";
+        flex: 0 0 auto;
+        display: inline-grid;
+        place-items: center;
+        width: 21px;
+        height: 21px;
+        border-radius: 50%;
+        background: var(--brand-soft);
+        color: var(--brand);
+        font-size: 0.74rem;
+        font-weight: 900;
+        transform: translateY(3px);
+      }
+
+      /* --- Auth card --- */
+
+      .auth-card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        box-shadow: 0 24px 70px -18px rgba(19, 32, 27, 0.18);
+        padding: 28px;
+        display: grid;
+        gap: 20px;
+      }
+
+      .auth-tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        padding: 4px;
+        background: #f0f4f1;
+        border-radius: 12px;
+      }
+
+      .auth-tabs button {
+        min-height: 40px;
+        border: 0;
+        border-radius: 9px;
+        background: transparent;
+        color: var(--muted);
+        font: inherit;
+        font-weight: 700;
+        font-size: 0.94rem;
+        cursor: pointer;
+        transition: color 0.15s ease;
+      }
+
+      .auth-tabs button.active {
+        background: #fff;
+        color: var(--ink);
+        box-shadow: 0 2px 10px rgba(19, 32, 27, 0.1);
+      }
+
+      .auth-form {
+        display: grid;
+        gap: 15px;
+      }
+
+      .auth-form label {
+        display: grid;
+        gap: 7px;
+        color: var(--muted);
+        font-size: 0.82rem;
+        font-weight: 700;
+      }
+
+      .auth-form input {
+        width: 100%;
+        min-height: 47px;
+        padding: 0 15px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: #fff;
+        color: var(--ink);
+        font: inherit;
+        font-size: 0.96rem;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+
+      .auth-form input:focus {
+        border-color: var(--brand);
+        outline: none;
+        box-shadow: 0 0 0 4px rgba(23, 107, 91, 0.12);
+      }
+
+      .auth-submit {
+        min-height: 49px;
+        border: 0;
+        border-radius: 11px;
+        background: var(--brand);
+        color: #fff;
+        font: inherit;
+        font-weight: 800;
+        font-size: 0.98rem;
+        cursor: pointer;
+        transition: background 0.2s ease, transform 0.1s ease;
+      }
+
+      .auth-submit:hover {
+        background: var(--brand-strong);
+      }
+
+      .auth-submit:active {
+        transform: scale(0.99);
+      }
+
+      .auth-submit:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+
+      .auth-message {
+        min-height: 1.3em;
+        margin: 0;
+        font-size: 0.88rem;
+        font-weight: 600;
+      }
+
+      .auth-message.error { color: var(--danger); }
+
+      /* --- Features --- */
+
+      .features-head {
+        text-align: center;
+        max-width: 56ch;
+        margin: 0 auto 40px;
+      }
+
+      .features-head h2 {
+        font-size: clamp(1.6rem, 3.4vw, 2.2rem);
+        font-weight: 800;
+        letter-spacing: -0.025em;
+        margin-bottom: 12px;
+      }
+
+      .features-head p {
+        color: var(--muted);
+      }
+
+      .features {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 16px;
+        padding-bottom: clamp(56px, 9vh, 96px);
+      }
+
+      .feature {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 24px;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .feature:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 18px 44px -16px rgba(19, 32, 27, 0.16);
+      }
+
+      .feature-icon {
+        display: grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        background: var(--brand-soft);
+        font-size: 1.3rem;
+        margin-bottom: 16px;
+      }
+
+      .feature h3 {
+        font-size: 1.02rem;
+        font-weight: 800;
+        letter-spacing: -0.01em;
+        margin-bottom: 8px;
+      }
+
+      .feature p {
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      /* --- Footer --- */
+
+      .footer {
+        border-top: 1px solid var(--line);
+        padding: 26px 0 30px;
+        color: var(--muted);
+        font-size: 0.86rem;
+        text-align: center;
+      }
+
+      @media (max-width: 900px) {
+        .hero {
+          grid-template-columns: 1fr;
+          padding-top: 40px;
+        }
+
+        .features {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 560px) {
+        .container {
+          width: calc(100% - 32px);
+        }
+
+        .features {
+          grid-template-columns: 1fr;
+        }
+
+        .auth-card {
+          padding: 22px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="nav">
+      <div class="container nav-inner">
+        <a class="brand" href="/">
+          <svg class="brand-mark" viewBox="0 0 48 48" role="img" aria-label="Logo Foco no Estudo">
+            <rect x="5" y="7" width="38" height="34" rx="10"></rect>
+            <path d="M15 30V17c4 0 7 1 9 4 2-3 5-4 9-4v13c-4 0-7 1-9 4-2-3-5-4-9-4Z"></path>
+            <path d="M24 21v13"></path>
+            <path class="brand-spark" d="M13 11c5-4 16-5 23 2"></path>
+          </svg>
+          <span class="brand-name">Foco no Estudo</span>
+        </a>
+        <a class="nav-cta" href="#auth">Entrar</a>
+      </div>
+    </nav>
+
+    <header class="container hero">
+      <div>
+        <span class="badge">Auto-hospedado · Código aberto · Seus dados ficam com você</span>
+        <h1 class="headline">Cada minuto de estudo te aproxima da sua <em>conquista</em>.</h1>
+        <p class="sub">
+          Defina suas metas, cronometre suas sessões por disciplina e veja o esforço
+          de cada dia virar progresso real — rumo à aprovação, à vaga ou ao objetivo
+          que você escolher.
+        </p>
+        <ul class="checks">
+          <li><span><strong>Metas pessoais</strong> — defina a meta diária e a meta total do seu objetivo, e acompanhe cada avanço.</span></li>
+          <li><span><strong>Um projeto para cada conquista</strong> — concurso, vestibular, certificação: organize todos ao mesmo tempo.</span></li>
+          <li><span><strong>Timer por disciplina</strong> — inicie, pause e troque de matéria sem perder um segundo do seu esforço.</span></li>
+          <li><span><strong>Progresso visível</strong> — relatórios por dia, semana, mês e total mostram o quanto você já caminhou.</span></li>
+        </ul>
+      </div>
+
+      <div class="auth-card" id="auth">
+        <div class="auth-tabs" id="authTabs" role="tablist" aria-label="Entrar ou criar conta">
+          <button class="active" id="loginTab" type="button">Entrar</button>
+          <button id="registerTab" type="button">Criar conta</button>
+        </div>
+
+        <form class="auth-form" id="authForm">
+          <label>
+            E-mail
+            <input id="emailInput" type="email" autocomplete="email" required placeholder="voce@exemplo.com">
+          </label>
+          <label>
+            Senha
+            <input id="passwordInput" type="password" autocomplete="current-password" required minlength="6" placeholder="Mínimo de 6 caracteres">
+          </label>
+          <label id="confirmField" hidden>
+            Confirmar senha
+            <input id="confirmInput" type="password" autocomplete="new-password" minlength="6" placeholder="Repita a senha">
+          </label>
+          <button class="auth-submit" id="authSubmit" type="submit">Entrar</button>
+          <p class="auth-message" id="authMessage" role="alert"></p>
+        </form>
+      </div>
+    </header>
+
+    <section class="container">
+      <div class="features-head">
+        <h2>Feito para quem tem um objetivo</h2>
+        <p>Constância diária hoje, conquista amanhã. O app cuida dos números para você cuidar do estudo.</p>
+      </div>
+      <div class="features">
+        <div class="feature">
+          <div class="feature-icon">🎯</div>
+          <h3>Metas que guiam</h3>
+          <p>Medidor de progresso diário e celebração quando você bate a meta do dia.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">🏆</div>
+          <h3>Cada objetivo, um projeto</h3>
+          <p>Disciplinas, metas e histórico separados para cada conquista que você persegue.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">🔒</div>
+          <h3>Dados só seus</h3>
+          <p>Auto-hospedado com SQLite. Seu esforço registrado na sua máquina, não na nuvem.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">⚡</div>
+          <h3>Nenhum minuto perdido</h3>
+          <p>Checkpoints automáticos protegem suas sessões mesmo se o servidor cair no meio do estudo.</p>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p>Foco no Estudo — transforme constância em conquista.</p>
+    </footer>
+
+    <script>
+      const el = (id) => document.getElementById(id);
+      const tabs = { login: el("loginTab"), register: el("registerTab") };
+      const confirmField = el("confirmField");
+      const passwordInput = el("passwordInput");
+      const confirmInput = el("confirmInput");
+      const submitButton = el("authSubmit");
+      const messageLine = el("authMessage");
+      let mode = "login";
+
+      function setMessage(text, kind) {
+        messageLine.textContent = text || "";
+        messageLine.className = `auth-message${kind ? ` ${kind}` : ""}`;
+      }
+
+      function setMode(next) {
+        mode = next;
+        tabs.login.classList.toggle("active", mode === "login");
+        tabs.register.classList.toggle("active", mode === "register");
+        confirmField.hidden = mode !== "register";
+        confirmInput.required = mode === "register";
+        passwordInput.autocomplete = mode === "login" ? "current-password" : "new-password";
+        submitButton.textContent = mode === "login" ? "Entrar" : "Criar conta";
+        setMessage("");
+      }
+
+      tabs.login.addEventListener("click", () => setMode("login"));
+      tabs.register.addEventListener("click", () => setMode("register"));
+
+      el("authForm").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        setMessage("");
+        const email = el("emailInput").value.trim();
+        const password = passwordInput.value;
+        if (mode === "register" && password !== confirmInput.value) {
+          setMessage("As senhas não conferem.", "error");
+          return;
+        }
+        submitButton.disabled = true;
+        try {
+          const response = await fetch(`/api/auth/${mode}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, password }),
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "Erro inesperado");
+          window.location.href = "/app";
+        } catch (error) {
+          setMessage(error.message, "error");
+          submitButton.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

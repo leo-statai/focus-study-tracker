@@ -22,9 +22,15 @@
             <h1 id="projectName">Contador de Estudos</h1>
           </div>
         </div>
-        <button class="ghost-button" id="settingsButton" type="button" title="Configurações">
-          <span>⚙</span>
-        </button>
+        <div class="topbar-actions">
+          <select id="projectSelect" aria-label="Projeto ativo"></select>
+          <button class="ghost-button" id="settingsButton" type="button" title="Configurações">
+            <span>⚙</span>
+          </button>
+          <button class="ghost-button" id="logoutButton" type="button" title="Sair da conta">
+            <span>⏻</span>
+          </button>
+        </div>
       </header>
 
       <section class="hero-grid">
@@ -178,7 +184,8 @@
         </div>
 
         <menu>
-          <button class="danger-button" id="resetButton" type="button">Resetar tudo</button>
+          <button class="danger-button" id="resetButton" type="button">Zerar sessões</button>
+          <button class="danger-button" id="deleteProjectButton" type="button">Excluir projeto</button>
           <span class="menu-spacer"></span>
           <button class="secondary-button" value="cancel" type="submit">Cancelar</button>
           <button class="primary-button" id="saveSettingsButton" value="default" type="button">Salvar</button>

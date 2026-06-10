@@ -1,3 +1,5 @@
+// Foco no Estudo — frontend do aplicativo (vanilla JS, sem dependências).
+
 const state = {
   data: null,
   selectedSubjectId: null,
@@ -10,40 +12,66 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 
+// --- API ---
+
 const clientTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "";
 
 const api = async (path, options = {}) => {
-  const headers = {
-    "Content-Type": "application/json",
-    "X-Client-Time-Zone": clientTimeZone(),
-    "X-Client-Timezone-Offset": String(new Date().getTimezoneOffset()),
-    ...(options.headers || {}),
-  };
   const response = await fetch(path, {
     ...options,
-    headers,
+    headers: {
+      "Content-Type": "application/json",
+      "X-Client-Time-Zone": clientTimeZone(),
+      "X-Client-Timezone-Offset": String(new Date().getTimezoneOffset()),
+      ...(options.headers || {}),
+    },
   });
+  if (response.status === 401) {
+    window.location.href = "/";
+    throw new Error("Sessão expirada. Faça login novamente.");
+  }
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "Erro inesperado");
   return data;
 };
 
-const secondsToParts = (seconds) => {
+// Executa uma ação que devolve o estado completo e re-renderiza tudo.
+async function applyAction(path, body = {}) {
+  state.data = await api(path, { method: "POST", body: JSON.stringify(body) });
+  renderState();
+  await loadReport(state.period);
+}
+
+async function loadState() {
+  state.data = await api("/api/state");
+  renderState();
+  await loadReport(state.period);
+}
+
+async function loadReport(period) {
+  state.period = period;
+  state.report = await api(`/api/reports?period=${period}`);
+  document.querySelectorAll(".segmented button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.period === period);
+  });
+  renderReport();
+}
+
+// --- Formatação ---
+
+const formatDuration = (seconds, compact = false) => {
   const safe = Math.max(0, Math.floor(seconds));
   const hours = Math.floor(safe / 3600);
   const minutes = Math.floor((safe % 3600) / 60);
-  const secs = safe % 60;
-  return { hours, minutes, seconds: secs };
+  if (hours > 0) {
+    return compact ? `${hours}h${String(minutes).padStart(2, "0")}` : `${hours}h ${minutes}min`;
+  }
+  if (minutes > 0) return `${minutes}min`;
+  return `${safe % 60}s`;
 };
 
-const formatDuration = (seconds, compact = false) => {
-  const parts = secondsToParts(seconds);
-  if (parts.hours > 0) {
-    return compact ? `${parts.hours}h${String(parts.minutes).padStart(2, "0")}` : `${parts.hours}h ${parts.minutes}min`;
-  }
-  if (parts.minutes > 0) return `${parts.minutes}min`;
-  return `${parts.seconds}s`;
-};
+const formatDayLabel = (date) =>
+  new Date(`${date}T12:00:00`).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
@@ -54,29 +82,46 @@ const sessionSeconds = (session) => {
   return Math.max(0, Math.floor((Date.now() - started) / 1000));
 };
 
-const formatDayLabel = (date) =>
-  new Date(`${date}T12:00:00`).toLocaleDateString("pt-BR", {
-    day: "2-digit",
-    month: "2-digit",
-  });
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replaceAll("'", "&#39;");
+}
+
+// --- Gráficos (canvas) ---
+
+function roundRect(ctx, x, y, width, height, radius) {
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + width, y, x + width, y + height, r);
+  ctx.arcTo(x + width, y + height, x, y + height, r);
+  ctx.arcTo(x, y + height, x, y, r);
+  ctx.arcTo(x, y, x + width, y, r);
+  ctx.closePath();
+}
 
 function drawGauge(percent) {
   const canvas = $("#gaugeCanvas");
   const ctx = canvas.getContext("2d");
-  const width = canvas.width;
-  const height = canvas.height;
+  const { width, height } = canvas;
   const centerX = width / 2;
   const centerY = height * 0.82;
   const radius = Math.min(width * 0.39, height * 0.68);
   const start = Math.PI;
-  const end = Math.PI * 2;
   const clamped = Math.min(percent, 100) / 100;
 
   ctx.clearRect(0, 0, width, height);
   ctx.lineCap = "round";
 
   ctx.beginPath();
-  ctx.arc(centerX, centerY, radius, start, end);
+  ctx.arc(centerX, centerY, radius, start, Math.PI * 2);
   ctx.strokeStyle = css("--panel-soft");
   ctx.lineWidth = 28;
   ctx.stroke();
@@ -94,11 +139,9 @@ function drawGauge(percent) {
 
   for (let i = 0; i <= 10; i += 1) {
     const angle = start + Math.PI * (i / 10);
-    const inner = radius - 24;
-    const outer = radius - 8;
     ctx.beginPath();
-    ctx.moveTo(centerX + Math.cos(angle) * inner, centerY + Math.sin(angle) * inner);
-    ctx.lineTo(centerX + Math.cos(angle) * outer, centerY + Math.sin(angle) * outer);
+    ctx.moveTo(centerX + Math.cos(angle) * (radius - 24), centerY + Math.sin(angle) * (radius - 24));
+    ctx.lineTo(centerX + Math.cos(angle) * (radius - 8), centerY + Math.sin(angle) * (radius - 8));
     ctx.strokeStyle = "rgba(23, 32, 29, 0.26)";
     ctx.lineWidth = 2;
     ctx.stroke();
@@ -108,30 +151,25 @@ function drawGauge(percent) {
 function drawBarChart(items) {
   const canvas = $("#barChart");
   const ctx = canvas.getContext("2d");
-  const width = canvas.width;
-  const height = canvas.height;
+  const { width, height } = canvas;
   const pad = 42;
   const chartHeight = height - pad * 1.55;
   const max = Math.max(...items.map((item) => item.seconds), 3600);
 
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = css("--muted");
   ctx.font = "13px system-ui";
 
   const gap = 10;
   const barWidth = Math.max(10, (width - pad * 2 - gap * (items.length - 1)) / Math.max(items.length, 1));
 
   items.forEach((item, index) => {
-    const value = item.seconds;
-    const barHeight = Math.max(value ? 4 : 0, (value / max) * chartHeight);
+    const barHeight = Math.max(item.seconds ? 4 : 0, (item.seconds / max) * chartHeight);
     const x = pad + index * (barWidth + gap);
-    const y = pad + chartHeight - barHeight;
-    const label = new Date(`${item.date}T12:00:00`).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 
     ctx.fillStyle = "rgba(23, 107, 91, 0.14)";
     ctx.fillRect(x, pad, barWidth, chartHeight);
     ctx.fillStyle = css("--primary");
-    roundRect(ctx, x, y, barWidth, barHeight, 5);
+    roundRect(ctx, x, pad + chartHeight - barHeight, barWidth, barHeight, 5);
     ctx.fill();
 
     ctx.save();
@@ -139,7 +177,7 @@ function drawBarChart(items) {
     ctx.rotate(items.length > 14 ? -0.65 : 0);
     ctx.fillStyle = css("--muted");
     ctx.textAlign = items.length > 14 ? "right" : "center";
-    ctx.fillText(label, 0, 0);
+    ctx.fillText(formatDayLabel(item.date), 0, 0);
     ctx.restore();
   });
 
@@ -153,8 +191,7 @@ function drawBarChart(items) {
 function drawDonutChart(items) {
   const canvas = $("#donutChart");
   const ctx = canvas.getContext("2d");
-  const width = canvas.width;
-  const height = canvas.height;
+  const { width, height } = canvas;
   const centerX = width * 0.38;
   const centerY = height * 0.5;
   const radius = Math.min(width, height) * 0.28;
@@ -204,16 +241,7 @@ function drawDonutChart(items) {
   });
 }
 
-function roundRect(ctx, x, y, width, height, radius) {
-  const r = Math.min(radius, width / 2, height / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + width, y, x + width, y + height, r);
-  ctx.arcTo(x + width, y + height, x, y + height, r);
-  ctx.arcTo(x, y + height, x, y, r);
-  ctx.arcTo(x, y, x + width, y, r);
-  ctx.closePath();
-}
+// --- Celebração da meta diária ---
 
 function unlockAudio() {
   const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -233,7 +261,6 @@ function playGoalSound() {
     { frequency: 659.25, start: 0.13, duration: 0.18 },
     { frequency: 783.99, start: 0.3, duration: 0.32 },
   ];
-
   notes.forEach((note) => {
     const oscillator = audio.createOscillator();
     const gain = audio.createGain();
@@ -282,11 +309,20 @@ function maybeCelebrateDailyGoal(todaySeconds, goalSeconds) {
     state.goalCelebrated = false;
     return;
   }
-  if (!state.goalCelebrated && previous < goalSeconds && todaySeconds >= goalSeconds) {
+  if (!state.goalCelebrated && previous < goalSeconds) {
     state.goalCelebrated = true;
     triggerGoalCelebration();
   }
 }
+
+// Ao trocar de projeto, zera o controle da celebração e a disciplina escolhida.
+function resetProjectView() {
+  state.selectedSubjectId = null;
+  state.lastTodaySeconds = null;
+  state.goalCelebrated = false;
+}
+
+// --- Renderização ---
 
 function renderState() {
   const data = state.data;
@@ -316,10 +352,21 @@ function renderState() {
     ? `Estudando ${running.subject_name} desde ${new Date(running.logical_started_at || running.started_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}.`
     : "Timer pausado. Selecione uma disciplina e inicie quando estiver pronto.";
 
+  renderProjectSelect();
   renderSubjectSelect();
   renderTodaySubjects();
   drawGauge(dailyPercent);
   maybeCelebrateDailyGoal(todaySeconds, dailyGoalSeconds);
+}
+
+function renderProjectSelect() {
+  const select = $("#projectSelect");
+  const projects = state.data.projects || [];
+  select.innerHTML =
+    projects
+      .map((project) => `<option value="${project.id}">${escapeHtml(project.name)}</option>`)
+      .join("") + `<option value="__new__">+ Novo projeto…</option>`;
+  select.value = String(state.data.project.id);
 }
 
 function renderSubjectSelect() {
@@ -414,55 +461,56 @@ function renderSettings() {
     .join("");
 }
 
-async function loadState() {
-  state.data = await api("/api/state");
-  renderState();
-  await loadReport(state.period);
-}
+// --- Eventos: projeto e conta ---
 
-async function loadReport(period) {
-  state.period = period;
-  state.report = await api(`/api/reports?period=${period}`);
-  document.querySelectorAll(".segmented button").forEach((button) => {
-    button.classList.toggle("active", button.dataset.period === period);
-  });
-  renderReport();
-}
+$("#projectSelect").addEventListener("change", async (event) => {
+  const value = event.target.value;
+  try {
+    if (value === "__new__") {
+      const name = prompt("Nome do novo projeto (ex.: Concurso Receita Federal):");
+      if (!name || !name.trim()) {
+        renderProjectSelect();
+        return;
+      }
+      resetProjectView();
+      await applyAction("/api/projects", { name: name.trim() });
+    } else {
+      resetProjectView();
+      await applyAction(`/api/projects/${value}/activate`);
+    }
+  } catch (error) {
+    alert(error.message);
+    renderProjectSelect();
+  }
+});
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
+$("#logoutButton").addEventListener("click", async () => {
+  try {
+    await api("/api/auth/logout", { method: "POST", body: "{}" });
+  } finally {
+    window.location.href = "/";
+  }
+});
 
-function escapeAttr(value) {
-  return escapeHtml(value).replaceAll("'", "&#39;");
-}
+// --- Eventos: timer ---
 
 $("#subjectSelect").addEventListener("change", async (event) => {
   const subjectId = Number(event.target.value);
   state.selectedSubjectId = subjectId;
   if (state.data.running_session) {
-    state.data = await api("/api/timer/switch", {
-      method: "POST",
-      body: JSON.stringify({ subject_id: subjectId }),
-    });
-    renderState();
-    await loadReport(state.period);
+    await applyAction("/api/timer/switch", { subject_id: subjectId });
   }
 });
 
 $("#timerButton").addEventListener("click", async () => {
   unlockAudio();
   const running = state.data.running_session;
-  const path = running ? "/api/timer/pause" : "/api/timer/start";
-  const body = running ? {} : { subject_id: state.selectedSubjectId };
   try {
-    state.data = await api(path, { method: "POST", body: JSON.stringify(body) });
-    renderState();
-    await loadReport(state.period);
+    if (running) {
+      await applyAction("/api/timer/pause");
+    } else {
+      await applyAction("/api/timer/start", { subject_id: state.selectedSubjectId });
+    }
   } catch (error) {
     $("#statusLine").textContent = error.message;
   }
@@ -472,13 +520,14 @@ document.querySelectorAll(".segmented button").forEach((button) => {
   button.addEventListener("click", () => loadReport(button.dataset.period));
 });
 
+// --- Eventos: configurações ---
+
 $("#settingsButton").addEventListener("click", () => {
   renderSettings();
   $("#settingsDialog").showModal();
 });
 
 $("#addSubjectButton").addEventListener("click", () => {
-  const list = $("#subjectEditorList");
   const item = document.createElement("div");
   item.className = "editor-item";
   item.dataset.id = "new";
@@ -488,7 +537,7 @@ $("#addSubjectButton").addEventListener("click", () => {
     <button class="ghost-button danger" type="button" title="Ativar ou desativar">✓</button>
     <button class="ghost-button danger delete-subject" type="button" title="Excluir disciplina">−</button>
   `;
-  list.appendChild(item);
+  $("#subjectEditorList").appendChild(item);
 });
 
 $("#subjectEditorList").addEventListener("click", (event) => {
@@ -517,11 +566,24 @@ $("#subjectEditorList").addEventListener("click", (event) => {
 });
 
 $("#resetButton").addEventListener("click", async () => {
-  const message = "Resetar tudo? O banco será recriado com o projeto e disciplinas iniciais, apagando sessões, metas e disciplinas atuais.";
+  const message = "Zerar as sessões deste projeto? Todo o histórico de estudo será apagado. Disciplinas e metas são mantidas.";
   if (!confirm(message)) return;
   try {
-    state.data = await api("/api/reset", { method: "POST", body: "{}" });
+    await applyAction("/api/reset");
     $("#settingsDialog").close();
+  } catch (error) {
+    alert(error.message);
+  }
+});
+
+$("#deleteProjectButton").addEventListener("click", async () => {
+  const project = state.data.project;
+  const message = `Excluir o projeto "${project.name}"? Disciplinas e todo o histórico de sessões serão apagados. Essa ação não pode ser desfeita.`;
+  if (!confirm(message)) return;
+  try {
+    state.data = await api(`/api/projects/${project.id}`, { method: "DELETE" });
+    $("#settingsDialog").close();
+    resetProjectView();
     renderState();
     await loadReport(state.period);
   } catch (error) {
@@ -538,8 +600,7 @@ $("#saveSettingsButton").addEventListener("click", async () => {
 
   try {
     state.data = await api("/api/project", { method: "POST", body: JSON.stringify(projectPayload) });
-    const items = [...document.querySelectorAll("#subjectEditorList .editor-item")];
-    for (const item of items) {
+    for (const item of document.querySelectorAll("#subjectEditorList .editor-item")) {
       const [colorInput, nameInput] = item.querySelectorAll("input");
       const name = nameInput.value.trim();
       if (!name) continue;
@@ -548,11 +609,11 @@ $("#saveSettingsButton").addEventListener("click", async () => {
         color: colorInput.value,
         active: item.querySelector("button").textContent.trim() === "✓",
       };
-      if (item.dataset.id === "new") {
-        await api("/api/subjects", { method: "POST", body: JSON.stringify(payload) });
-      } else {
-        await api(`/api/subjects/${item.dataset.id}`, { method: "POST", body: JSON.stringify(payload) });
-      }
+      const isNew = item.dataset.id === "new";
+      await api(isNew ? "/api/subjects" : `/api/subjects/${item.dataset.id}`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
     }
     $("#settingsDialog").close();
     await loadState();
@@ -560,6 +621,8 @@ $("#saveSettingsButton").addEventListener("click", async () => {
     alert(error.message);
   }
 });
+
+// --- Inicialização ---
 
 setInterval(async () => {
   if (!state.data?.running_session) return;

@@ -637,6 +637,19 @@ menu {
   }
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#projectSelect {
+  width: auto;
+  min-width: 180px;
+  max-width: 280px;
+  font-weight: 800;
+}
+
 @keyframes panelCelebrate {
   0%,
   100% {

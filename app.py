@@ -1,16 +1,29 @@
 #!/usr/bin/env python3
+"""Foco no Estudo — rastreador de tempo de estudos.
+
+Servidor HTTP, API JSON e persistência SQLite em um único arquivo,
+usando apenas a biblioteca padrão do Python.
+"""
+import hashlib
+import hmac
 import json
 import mimetypes
 import os
+import re
+import secrets
 import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from http import cookies as http_cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+# ---------------------------------------------------------------------------
+# Configuração
+# ---------------------------------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -18,38 +31,41 @@ DATA_DIR = Path(os.environ.get("APP_DATA_DIR", BASE_DIR / "data"))
 DB_PATH = Path(os.environ.get("APP_DB_PATH", DATA_DIR / "estudos.sqlite"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8000"))
+CHECKPOINT_INTERVAL = int(os.environ.get("CHECKPOINT_INTERVAL", "300"))  # segundos
+
 SERVER_TZ = datetime.now().astimezone().tzinfo or timezone.utc
 UTC = timezone.utc
-CHECKPOINT_INTERVAL = int(os.environ.get("CHECKPOINT_INTERVAL", "300"))  # seconds
 
+PBKDF2_ITERATIONS = 200_000
+TOKEN_TTL_DAYS = 30
+SESSION_COOKIE = "session"
 
-def now_in(tz):
-    return datetime.now(tz).replace(microsecond=0)
+PERIODS = {"today", "week", "month", "total"}
+
+DEFAULT_PROJECT_NAME = "Meu projeto de estudos"
+DEFAULT_DAILY_GOAL = 360       # minutos (6h)
+DEFAULT_TOTAL_GOAL = 36_000    # minutos (600h)
+DEFAULT_SUBJECTS = [
+    ("Português", "#2f80ed"),
+    ("Direito Constitucional", "#27ae60"),
+    ("Raciocínio Lógico", "#f2994a"),
+    ("Informática", "#9b51e0"),
+]
+
+# ---------------------------------------------------------------------------
+# Tempo e fuso horário
+# ---------------------------------------------------------------------------
 
 
 def now_utc():
     return datetime.now(UTC).replace(microsecond=0)
 
 
-def request_timezone(headers):
-    zone_name = (headers.get("X-Client-Time-Zone") or "").strip()
-    if zone_name:
-        try:
-            return ZoneInfo(zone_name)
-        except ZoneInfoNotFoundError:
-            pass
-
-    offset = (headers.get("X-Client-Timezone-Offset") or "").strip()
-    if offset:
-        try:
-            minutes = int(offset)
-            return timezone(timedelta(minutes=-minutes))
-        except ValueError:
-            pass
-    return SERVER_TZ
+def iso_utc(dt):
+    return dt.astimezone(UTC).replace(microsecond=0).isoformat()
 
 
-def parse_dt(value, tz=SERVER_TZ):
+def parse_dt(value, tz):
     if not value:
         return None
     parsed = datetime.fromisoformat(value)
@@ -58,18 +74,26 @@ def parse_dt(value, tz=SERVER_TZ):
     return parsed.astimezone(tz)
 
 
-def iso_utc(dt):
-    return dt.astimezone(UTC).replace(microsecond=0).isoformat()
-
-
-def today_bounds(tz):
-    start = now_in(tz).replace(hour=0, minute=0, second=0)
-    return start, start + timedelta(days=1)
+def request_timezone(headers):
+    """Resolve o fuso do cliente a partir dos headers enviados pelo frontend."""
+    zone_name = (headers.get("X-Client-Time-Zone") or "").strip()
+    if zone_name:
+        try:
+            return ZoneInfo(zone_name)
+        except ZoneInfoNotFoundError:
+            pass
+    offset = (headers.get("X-Client-Timezone-Offset") or "").strip()
+    if offset:
+        try:
+            return timezone(timedelta(minutes=-int(offset)))
+        except ValueError:
+            pass
+    return SERVER_TZ
 
 
 def period_bounds(period, tz):
-    current = now_in(tz)
-    day_start = current.replace(hour=0, minute=0, second=0)
+    """Início e fim (exclusivo) do período no fuso dado; (None, None) = sem limite."""
+    day_start = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
     if period == "today":
         return day_start, day_start + timedelta(days=1)
     if period == "week":
@@ -77,12 +101,14 @@ def period_bounds(period, tz):
         return start, start + timedelta(days=7)
     if period == "month":
         start = day_start.replace(day=1)
-        if start.month == 12:
-            end = start.replace(year=start.year + 1, month=1)
-        else:
-            end = start.replace(month=start.month + 1)
-        return start, end
+        next_month = start.replace(year=start.year + 1, month=1) if start.month == 12 \
+            else start.replace(month=start.month + 1)
+        return start, next_month
     return None, None
+
+# ---------------------------------------------------------------------------
+# Banco de dados
+# ---------------------------------------------------------------------------
 
 
 def connect():
@@ -97,13 +123,30 @@ def init_db():
     with connect() as conn:
         conn.executescript(
             """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE,
+                password_salt TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS auth_tokens (
+                token_hash TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+
             CREATE TABLE IF NOT EXISTS projects (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 daily_goal_minutes INTEGER NOT NULL DEFAULT 360,
                 total_goal_minutes INTEGER NOT NULL DEFAULT 36000,
                 active INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                user_id INTEGER REFERENCES users(id)
             );
 
             CREATE TABLE IF NOT EXISTS subjects (
@@ -128,37 +171,132 @@ def init_db():
             );
             """
         )
-        project = conn.execute("SELECT id FROM projects WHERE active = 1 LIMIT 1").fetchone()
-        if not project:
-            created = iso_utc(now_utc())
-            cur = conn.execute(
-                """
-                INSERT INTO projects (name, daily_goal_minutes, total_goal_minutes, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                ("Meu projeto de estudos", 360, 36000, created),
-            )
-            project_id = cur.lastrowid
-            defaults = [
-                ("Português", "#2f80ed"),
-                ("Direito Constitucional", "#27ae60"),
-                ("Raciocínio Lógico", "#f2994a"),
-                ("Informática", "#9b51e0"),
-            ]
-            conn.executemany(
-                """
-                INSERT INTO subjects (project_id, name, color, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                [(project_id, name, color, created) for name, color in defaults],
-            )
+        # Migração de bancos criados antes do suporte multiusuário.
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
+        if "user_id" not in columns:
+            conn.execute("ALTER TABLE projects ADD COLUMN user_id INTEGER REFERENCES users(id)")
+
+# ---------------------------------------------------------------------------
+# Senhas e sessões de login
+# ---------------------------------------------------------------------------
 
 
-def active_project(conn):
-    project = conn.execute("SELECT * FROM projects WHERE active = 1 ORDER BY id LIMIT 1").fetchone()
+def hash_password(password, salt_hex=None):
+    salt_hex = salt_hex or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), PBKDF2_ITERATIONS
+    ).hex()
+    return salt_hex, digest
+
+
+def verify_password(user, password):
+    _, digest = hash_password(password, user["password_salt"])
+    return hmac.compare_digest(digest, user["password_hash"])
+
+
+def token_hash(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def session_token(headers):
+    header = headers.get("Cookie")
+    if not header:
+        return None
+    cookie = http_cookies.SimpleCookie()
+    try:
+        cookie.load(header)
+    except http_cookies.CookieError:
+        return None
+    morsel = cookie.get(SESSION_COOKIE)
+    return morsel.value if morsel and morsel.value else None
+
+
+def user_from_cookie(conn, headers):
+    token = session_token(headers)
+    if not token:
+        return None
+    return conn.execute(
+        """
+        SELECT u.* FROM auth_tokens t
+        JOIN users u ON u.id = t.user_id
+        WHERE t.token_hash = ? AND t.expires_at > ?
+        """,
+        (token_hash(token), iso_utc(now_utc())),
+    ).fetchone()
+
+
+def issue_session_cookie(conn, user_id):
+    token = secrets.token_urlsafe(32)
+    created = now_utc()
+    conn.execute(
+        "INSERT INTO auth_tokens (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        (token_hash(token), user_id, iso_utc(created), iso_utc(created + timedelta(days=TOKEN_TTL_DAYS))),
+    )
+    return f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={TOKEN_TTL_DAYS * 86400}"
+
+
+def clear_session_cookie():
+    return f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+
+# ---------------------------------------------------------------------------
+# Projetos, disciplinas e sessões de estudo
+# ---------------------------------------------------------------------------
+
+
+def create_project(conn, user_id, name, daily_goal_minutes, total_goal_minutes):
+    created = iso_utc(now_utc())
+    cur = conn.execute(
+        """
+        INSERT INTO projects (name, daily_goal_minutes, total_goal_minutes, active, user_id, created_at)
+        VALUES (?, ?, ?, 0, ?, ?)
+        """,
+        (name, daily_goal_minutes, total_goal_minutes, user_id, created),
+    )
+    project_id = cur.lastrowid
+    conn.executemany(
+        "INSERT INTO subjects (project_id, name, color, created_at) VALUES (?, ?, ?, ?)",
+        [(project_id, subject, color, created) for subject, color in DEFAULT_SUBJECTS],
+    )
+    return project_id
+
+
+def activate_project(conn, user_id, project_id):
+    """Torna o projeto o ativo do usuário, pausando qualquer timer em andamento."""
+    for row in conn.execute("SELECT id FROM projects WHERE user_id = ? AND active = 1", (user_id,)):
+        close_active_session(conn, row["id"])
+    conn.execute("UPDATE projects SET active = 0 WHERE user_id = ?", (user_id,))
+    conn.execute("UPDATE projects SET active = 1 WHERE id = ? AND user_id = ?", (project_id, user_id))
+
+
+def active_project(conn, user_id):
+    """Projeto ativo do usuário; elege ou cria um se necessário."""
+    project = conn.execute(
+        "SELECT * FROM projects WHERE user_id = ? AND active = 1 ORDER BY id LIMIT 1", (user_id,)
+    ).fetchone()
+    if project:
+        return project
+    project = conn.execute(
+        "SELECT * FROM projects WHERE user_id = ? ORDER BY id LIMIT 1", (user_id,)
+    ).fetchone()
     if not project:
-        raise RuntimeError("Projeto ativo não encontrado")
+        project_id = create_project(
+            conn, user_id, DEFAULT_PROJECT_NAME, DEFAULT_DAILY_GOAL, DEFAULT_TOTAL_GOAL
+        )
+        project = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    conn.execute("UPDATE projects SET active = 1 WHERE id = ?", (project["id"],))
     return project
+
+
+def owned_active_subject(conn, project_id, subject_id):
+    if subject_id <= 0:
+        raise ValueError("Selecione uma disciplina")
+    subject = conn.execute(
+        "SELECT id FROM subjects WHERE id = ? AND project_id = ? AND active = 1",
+        (subject_id, project_id),
+    ).fetchone()
+    if not subject:
+        raise ValueError("Disciplina inválida")
+    return subject
 
 
 def active_session(conn, project_id):
@@ -176,8 +314,8 @@ def active_session(conn, project_id):
 
 
 def session_logical_start(conn, session):
-    # Walk the checkpoint chain backwards (each chunk's ended_at == next chunk's started_at)
-    # to find the original start of the current logical session.
+    # Percorre a cadeia de checkpoints para trás (o ended_at de cada trecho é o
+    # started_at do seguinte) até o início real da sessão lógica atual.
     row = conn.execute(
         """
         WITH RECURSIVE chain(id, started_at, ended_at, subject_id, project_id) AS (
@@ -197,13 +335,12 @@ def session_logical_start(conn, session):
     return row["logical_started_at"] if row and row["logical_started_at"] else session["started_at"]
 
 
-def close_active_session(conn, project_id, end_time=None, tz=SERVER_TZ):
+def close_active_session(conn, project_id, end_time=None):
     session = active_session(conn, project_id)
     if not session:
         return None
     end_time = end_time or now_utc()
-    end_time = end_time.astimezone(tz)
-    started = parse_dt(session["started_at"], tz)
+    started = parse_dt(session["started_at"], UTC)
     if end_time < started:
         end_time = started
     conn.execute(
@@ -213,8 +350,9 @@ def close_active_session(conn, project_id, end_time=None, tz=SERVER_TZ):
     return session
 
 
-def session_segments(rows, start_bound=None, end_bound=None, tz=SERVER_TZ):
-    current = now_in(tz)
+def session_segments(rows, start_bound, end_bound, tz):
+    """Quebra as sessões em segmentos diários dentro do período, no fuso dado."""
+    current = datetime.now(tz).replace(microsecond=0)
     segments = []
     for row in rows:
         started = parse_dt(row["started_at"], tz)
@@ -223,9 +361,8 @@ def session_segments(rows, start_bound=None, end_bound=None, tz=SERVER_TZ):
             continue
         if start_bound and ended <= start_bound:
             continue
-        segment_start = max(started, start_bound) if start_bound else started
+        cursor = max(started, start_bound) if start_bound else started
         segment_end = min(ended, end_bound) if end_bound else ended
-        cursor = segment_start
         while cursor < segment_end:
             next_midnight = cursor.replace(hour=0, minute=0, second=0) + timedelta(days=1)
             chunk_end = min(segment_end, next_midnight)
@@ -244,7 +381,7 @@ def session_segments(rows, start_bound=None, end_bound=None, tz=SERVER_TZ):
     return segments
 
 
-def report_data(conn, project_id, period, tz=SERVER_TZ):
+def report_data(conn, project_id, period, tz):
     start, end = period_bounds(period, tz)
     rows = conn.execute(
         """
@@ -256,11 +393,11 @@ def report_data(conn, project_id, period, tz=SERVER_TZ):
         """,
         (project_id,),
     ).fetchall()
-    segments = session_segments(rows, start, end, tz)
+
     by_subject = {}
     by_day = {}
     total_seconds = 0
-    for item in segments:
+    for item in session_segments(rows, start, end, tz):
         total_seconds += item["seconds"]
         by_day[item["date"]] = by_day.get(item["date"], 0) + item["seconds"]
         subject = by_subject.setdefault(
@@ -274,7 +411,7 @@ def report_data(conn, project_id, period, tz=SERVER_TZ):
         )
         subject["seconds"] += item["seconds"]
 
-    if period in {"today", "week", "month"}:
+    if start and end:
         cursor = start
         while cursor < end:
             by_day.setdefault(cursor.date().isoformat(), 0)
@@ -290,28 +427,295 @@ def report_data(conn, project_id, period, tz=SERVER_TZ):
     }
 
 
-def state_data(conn, tz=SERVER_TZ):
-    project = active_project(conn)
+def state_data(conn, user, tz):
+    """Estado completo do app para o usuário: projetos, disciplinas, timer e resumos."""
+    project = active_project(conn, user["id"])
     project_id = project["id"]
+    projects = conn.execute(
+        "SELECT id, name, active FROM projects WHERE user_id = ? ORDER BY created_at ASC, id ASC",
+        (user["id"],),
+    ).fetchall()
     subjects = conn.execute(
         "SELECT * FROM subjects WHERE project_id = ? ORDER BY active DESC, name ASC",
         (project_id,),
     ).fetchall()
     running = active_session(conn, project_id)
-    today = report_data(conn, project_id, "today", tz)
-    total = report_data(conn, project_id, "total", tz)
-    running_dict = None
-    if running:
-        running_dict = dict(running)
+    running_dict = dict(running) if running else None
+    if running_dict:
         running_dict["logical_started_at"] = session_logical_start(conn, running)
     return {
+        "user": {"email": user["email"]},
         "project": dict(project),
+        "projects": [dict(row) for row in projects],
         "subjects": [dict(row) for row in subjects],
         "running_session": running_dict,
-        "today": today,
-        "total": total,
+        "today": report_data(conn, project_id, "today", tz),
+        "total": report_data(conn, project_id, "total", tz),
         "timezone": getattr(tz, "key", None) or str(tz),
     }
+
+# ---------------------------------------------------------------------------
+# Rotas da API
+# ---------------------------------------------------------------------------
+# Cada handler recebe um Request e devolve o payload JSON — ou uma tupla
+# (payload, status) / (payload, status, headers). Erros de validação são
+# levantados como ValueError e viram respostas 400.
+
+API_ROUTES = []
+
+
+def route(method, pattern, auth=True):
+    def register(func):
+        API_ROUTES.append((method, re.compile(f"^{pattern}/?$"), auth, func))
+        return func
+    return register
+
+
+class Request:
+    """Contexto de uma chamada de API."""
+
+    def __init__(self, conn, user, payload, params, query, tz, headers):
+        self.conn = conn
+        self.user = user
+        self.payload = payload
+        self.params = params
+        self.query = query
+        self.tz = tz
+        self.headers = headers
+
+    def text(self, key, message):
+        value = str(self.payload.get(key, "")).strip()
+        if not value:
+            raise ValueError(message)
+        return value
+
+    def goal(self, key, default=None):
+        minutes = int(self.payload.get(key) or default or 0)
+        if minutes <= 0:
+            raise ValueError("As metas precisam ser maiores que zero")
+        return minutes
+
+    def project(self):
+        return active_project(self.conn, self.user["id"])
+
+    def state(self):
+        return state_data(self.conn, self.user, self.tz)
+
+
+# --- Autenticação ---
+
+@route("POST", r"/api/auth/register", auth=False)
+def api_register(req):
+    email = str(req.payload.get("email", "")).strip().lower()
+    password = str(req.payload.get("password", ""))
+    if "@" not in email or "." not in email.rsplit("@", 1)[-1]:
+        raise ValueError("Informe um e-mail válido")
+    if len(password) < 6:
+        raise ValueError("A senha precisa ter ao menos 6 caracteres")
+    if req.conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone():
+        raise ValueError("E-mail já cadastrado")
+
+    salt, digest = hash_password(password)
+    cur = req.conn.execute(
+        "INSERT INTO users (email, password_salt, password_hash, created_at) VALUES (?, ?, ?, ?)",
+        (email, salt, digest, iso_utc(now_utc())),
+    )
+    user_id = cur.lastrowid
+    # O primeiro usuário cadastrado adota projetos criados antes da autenticação existir.
+    if req.conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"] == 1:
+        req.conn.execute("UPDATE projects SET user_id = ? WHERE user_id IS NULL", (user_id,))
+    req.user = req.conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    cookie = issue_session_cookie(req.conn, user_id)
+    return req.state(), 201, {"Set-Cookie": cookie}
+
+
+@route("POST", r"/api/auth/login", auth=False)
+def api_login(req):
+    email = str(req.payload.get("email", "")).strip().lower()
+    password = str(req.payload.get("password", ""))
+    user = req.conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    if not user or not verify_password(user, password):
+        raise ValueError("E-mail ou senha incorretos")
+    req.user = user
+    cookie = issue_session_cookie(req.conn, user["id"])
+    return req.state(), 200, {"Set-Cookie": cookie}
+
+
+@route("POST", r"/api/auth/logout", auth=False)
+def api_logout(req):
+    token = session_token(req.headers)
+    if token:
+        req.conn.execute("DELETE FROM auth_tokens WHERE token_hash = ?", (token_hash(token),))
+    return {"ok": True}, 200, {"Set-Cookie": clear_session_cookie()}
+
+
+# --- Estado e relatórios ---
+
+@route("GET", r"/api/state")
+def api_state(req):
+    return req.state()
+
+
+@route("GET", r"/api/reports")
+def api_reports(req):
+    period = req.query.get("period", ["today"])[0]
+    if period not in PERIODS:
+        raise ValueError("Período inválido")
+    return report_data(req.conn, req.project()["id"], period, req.tz)
+
+
+# --- Projetos ---
+
+@route("POST", r"/api/project")
+def api_update_project(req):
+    name = req.text("name", "Informe o nome do projeto")
+    daily = req.goal("daily_goal_minutes")
+    total = req.goal("total_goal_minutes")
+    req.conn.execute(
+        "UPDATE projects SET name = ?, daily_goal_minutes = ?, total_goal_minutes = ? WHERE id = ?",
+        (name, daily, total, req.project()["id"]),
+    )
+    return req.state()
+
+
+@route("POST", r"/api/projects")
+def api_create_project(req):
+    name = req.text("name", "Informe o nome do projeto")
+    daily = req.goal("daily_goal_minutes", DEFAULT_DAILY_GOAL)
+    total = req.goal("total_goal_minutes", DEFAULT_TOTAL_GOAL)
+    project_id = create_project(req.conn, req.user["id"], name, daily, total)
+    activate_project(req.conn, req.user["id"], project_id)
+    return req.state(), 201
+
+
+@route("POST", r"/api/projects/(?P<project_id>\d+)/activate")
+def api_activate_project(req):
+    project_id = int(req.params["project_id"])
+    owned = req.conn.execute(
+        "SELECT id FROM projects WHERE id = ? AND user_id = ?", (project_id, req.user["id"])
+    ).fetchone()
+    if not owned:
+        raise ValueError("Projeto não encontrado")
+    activate_project(req.conn, req.user["id"], project_id)
+    return req.state()
+
+
+@route("DELETE", r"/api/projects/(?P<project_id>\d+)")
+def api_delete_project(req):
+    project_id = int(req.params["project_id"])
+    owned = req.conn.execute(
+        "SELECT * FROM projects WHERE id = ? AND user_id = ?", (project_id, req.user["id"])
+    ).fetchone()
+    if not owned:
+        raise ValueError("Projeto não encontrado")
+    total = req.conn.execute(
+        "SELECT COUNT(*) AS n FROM projects WHERE user_id = ?", (req.user["id"],)
+    ).fetchone()["n"]
+    if total <= 1:
+        raise ValueError("Você precisa manter ao menos um projeto")
+    req.conn.execute("DELETE FROM study_sessions WHERE project_id = ?", (project_id,))
+    req.conn.execute("DELETE FROM subjects WHERE project_id = ?", (project_id,))
+    req.conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    if owned["active"]:
+        remaining = req.conn.execute(
+            "SELECT id FROM projects WHERE user_id = ? ORDER BY id LIMIT 1", (req.user["id"],)
+        ).fetchone()
+        if remaining:
+            activate_project(req.conn, req.user["id"], remaining["id"])
+    return req.state()
+
+
+@route("POST", r"/api/reset")
+def api_reset(req):
+    # Zera o histórico do projeto ativo; disciplinas e metas são mantidas.
+    req.conn.execute("DELETE FROM study_sessions WHERE project_id = ?", (req.project()["id"],))
+    return req.state()
+
+
+# --- Disciplinas ---
+
+@route("POST", r"/api/subjects")
+def api_create_subject(req):
+    name = req.text("name", "Informe o nome da disciplina")
+    color = str(req.payload.get("color", "#2f80ed")).strip()[:16]
+    cur = req.conn.execute(
+        "INSERT INTO subjects (project_id, name, color, created_at) VALUES (?, ?, ?, ?)",
+        (req.project()["id"], name, color, iso_utc(now_utc())),
+    )
+    return {"subject_id": cur.lastrowid, "state": req.state()}, 201
+
+
+@route("POST", r"/api/subjects/(?P<subject_id>\d+)")
+def api_update_subject(req):
+    subject_id = int(req.params["subject_id"])
+    name = req.text("name", "Informe o nome da disciplina")
+    color = str(req.payload.get("color", "#2f80ed")).strip()[:16]
+    active = 1 if req.payload.get("active", True) else 0
+    req.conn.execute(
+        "UPDATE subjects SET name = ?, color = ?, active = ? WHERE id = ? AND project_id = ?",
+        (name, color, active, subject_id, req.project()["id"]),
+    )
+    return req.state()
+
+
+@route("DELETE", r"/api/subjects/(?P<subject_id>\d+)")
+def api_delete_subject(req):
+    subject_id = int(req.params["subject_id"])
+    project_id = req.project()["id"]
+    subject = req.conn.execute(
+        "SELECT id FROM subjects WHERE id = ? AND project_id = ?", (subject_id, project_id)
+    ).fetchone()
+    if not subject:
+        raise ValueError("Disciplina não encontrada")
+    close_active_session(req.conn, project_id)
+    req.conn.execute(
+        "DELETE FROM study_sessions WHERE subject_id = ? AND project_id = ?", (subject_id, project_id)
+    )
+    req.conn.execute(
+        "DELETE FROM subjects WHERE id = ? AND project_id = ?", (subject_id, project_id)
+    )
+    return req.state()
+
+
+# --- Timer ---
+
+@route("POST", r"/api/timer/start")
+def api_timer_start(req):
+    project_id = req.project()["id"]
+    subject_id = int(req.payload.get("subject_id") or 0)
+    owned_active_subject(req.conn, project_id, subject_id)
+    if not active_session(req.conn, project_id):
+        req.conn.execute(
+            "INSERT INTO study_sessions (project_id, subject_id, started_at) VALUES (?, ?, ?)",
+            (project_id, subject_id, iso_utc(now_utc())),
+        )
+    return req.state()
+
+
+@route("POST", r"/api/timer/pause")
+def api_timer_pause(req):
+    close_active_session(req.conn, req.project()["id"])
+    return req.state()
+
+
+@route("POST", r"/api/timer/switch")
+def api_timer_switch(req):
+    project_id = req.project()["id"]
+    subject_id = int(req.payload.get("subject_id") or 0)
+    owned_active_subject(req.conn, project_id, subject_id)
+    running = active_session(req.conn, project_id)
+    if running and running["subject_id"] != subject_id:
+        timestamp = now_utc()
+        close_active_session(req.conn, project_id, timestamp)
+        req.conn.execute(
+            "INSERT INTO study_sessions (project_id, subject_id, started_at) VALUES (?, ?, ?)",
+            (project_id, subject_id, iso_utc(timestamp)),
+        )
+    return req.state()
+
+# ---------------------------------------------------------------------------
+# Servidor HTTP
+# ---------------------------------------------------------------------------
 
 
 def read_json(handler):
@@ -326,244 +730,134 @@ class AppHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print("[%s] %s" % (self.log_date_time_string(), fmt % args))
 
-    def client_timezone(self):
-        return request_timezone(self.headers)
-
-    def send_json(self, payload, status=200):
+    def send_json(self, payload, status=200, extra_headers=None):
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(encoded)
 
     def send_error_json(self, message, status=400):
         self.send_json({"error": message}, status)
 
-    def do_GET(self):
+    def redirect(self, location):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.end_headers()
+
+    def dispatch_api(self, method):
+        """Resolve a rota de API; devolve False se nenhuma corresponder."""
         parsed = urlparse(self.path)
-        if parsed.path == "/api/state":
-            with connect() as conn:
-                self.send_json(state_data(conn, self.client_timezone()))
+        for route_method, pattern, requires_auth, handler in API_ROUTES:
+            if route_method != method:
+                continue
+            match = pattern.match(parsed.path)
+            if not match:
+                continue
+            try:
+                payload = read_json(self) if method == "POST" else {}
+                with connect() as conn:
+                    user = user_from_cookie(conn, self.headers)
+                    if requires_auth and not user:
+                        self.send_error_json("Não autenticado", 401)
+                        return True
+                    request = Request(
+                        conn, user, payload, match.groupdict(),
+                        parse_qs(parsed.query), request_timezone(self.headers), self.headers,
+                    )
+                    result = handler(request)
+                body, status, headers = result, 200, None
+                if isinstance(result, tuple):
+                    body = result[0]
+                    status = result[1] if len(result) > 1 else 200
+                    headers = result[2] if len(result) > 2 else None
+                self.send_json(body, status, headers)
+            except json.JSONDecodeError:
+                self.send_error_json("JSON inválido", 400)
+            except ValueError as exc:
+                self.send_error_json(str(exc), 400)
+            except Exception as exc:
+                self.send_error_json(f"Erro interno: {exc}", 500)
+            return True
+        return False
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path.startswith("/api/"):
+            if not self.dispatch_api("GET"):
+                self.send_error_json("Rota não encontrada", 404)
             return
-        if parsed.path == "/api/reports":
-            period = parse_qs(parsed.query).get("period", ["today"])[0]
-            if period not in {"today", "week", "month", "total"}:
-                self.send_error_json("Período inválido", 400)
-                return
-            with connect() as conn:
-                project = active_project(conn)
-                self.send_json(report_data(conn, project["id"], period, self.client_timezone()))
-            return
-        self.serve_static(parsed.path)
+        self.serve_page(path)
 
     def do_POST(self):
-        parsed = urlparse(self.path)
-        try:
-            payload = read_json(self)
-            if parsed.path == "/api/project":
-                self.update_project(payload)
-            elif parsed.path == "/api/subjects":
-                self.create_subject(payload)
-            elif parsed.path.startswith("/api/subjects/"):
-                self.update_subject(parsed.path, payload)
-            elif parsed.path == "/api/timer/start":
-                self.start_timer(payload)
-            elif parsed.path == "/api/timer/pause":
-                self.pause_timer()
-            elif parsed.path == "/api/timer/switch":
-                self.switch_timer(payload)
-            elif parsed.path == "/api/reset":
-                self.reset_app()
-            else:
-                self.send_error_json("Rota não encontrada", 404)
-        except json.JSONDecodeError:
-            self.send_error_json("JSON inválido", 400)
-        except ValueError as exc:
-            self.send_error_json(str(exc), 400)
-        except Exception as exc:
-            self.send_error_json(f"Erro interno: {exc}", 500)
+        if not self.dispatch_api("POST"):
+            self.send_error_json("Rota não encontrada", 404)
 
     def do_DELETE(self):
-        parsed = urlparse(self.path)
-        try:
-            if parsed.path.startswith("/api/subjects/"):
-                self.delete_subject(parsed.path)
+        if not self.dispatch_api("DELETE"):
+            self.send_error_json("Rota não encontrada", 404)
+
+    def serve_page(self, path):
+        # "/" é a landing pública; "/app" é o aplicativo, que exige login.
+        if path in {"/", "/app", "/index.html"}:
+            with connect() as conn:
+                authenticated = user_from_cookie(conn, self.headers) is not None
+            if path == "/":
+                if authenticated:
+                    self.redirect("/app")
+                else:
+                    self.serve_static("/landing.html")
+            elif authenticated:
+                self.serve_static("/index.html")
             else:
-                self.send_error_json("Rota não encontrada", 404)
-        except ValueError as exc:
-            self.send_error_json(str(exc), 400)
-        except Exception as exc:
-            self.send_error_json(f"Erro interno: {exc}", 500)
-
-    def update_project(self, payload):
-        name = str(payload.get("name", "")).strip()
-        daily_goal_minutes = int(payload.get("daily_goal_minutes", 0))
-        total_goal_minutes = int(payload.get("total_goal_minutes", 0))
-        if not name:
-            raise ValueError("Informe o nome do projeto")
-        if daily_goal_minutes <= 0 or total_goal_minutes <= 0:
-            raise ValueError("As metas precisam ser maiores que zero")
-        with connect() as conn:
-            project = active_project(conn)
-            conn.execute(
-                """
-                UPDATE projects
-                SET name = ?, daily_goal_minutes = ?, total_goal_minutes = ?
-                WHERE id = ?
-                """,
-                (name, daily_goal_minutes, total_goal_minutes, project["id"]),
-            )
-            self.send_json(state_data(conn, self.client_timezone()))
-
-    def create_subject(self, payload):
-        name = str(payload.get("name", "")).strip()
-        color = str(payload.get("color", "#2f80ed")).strip()[:16]
-        if not name:
-            raise ValueError("Informe o nome da disciplina")
-        with connect() as conn:
-            project = active_project(conn)
-            cur = conn.execute(
-                """
-                INSERT INTO subjects (project_id, name, color, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (project["id"], name, color, iso_utc(now_utc())),
-            )
-            self.send_json({"subject_id": cur.lastrowid, "state": state_data(conn, self.client_timezone())}, 201)
-
-    def update_subject(self, path, payload):
-        subject_id = int(path.rstrip("/").split("/")[-1])
-        name = str(payload.get("name", "")).strip()
-        color = str(payload.get("color", "#2f80ed")).strip()[:16]
-        active = 1 if payload.get("active", True) else 0
-        if not name:
-            raise ValueError("Informe o nome da disciplina")
-        with connect() as conn:
-            project = active_project(conn)
-            conn.execute(
-                """
-                UPDATE subjects
-                SET name = ?, color = ?, active = ?
-                WHERE id = ? AND project_id = ?
-                """,
-                (name, color, active, subject_id, project["id"]),
-            )
-            self.send_json(state_data(conn, self.client_timezone()))
-
-    def delete_subject(self, path):
-        subject_id = int(path.rstrip("/").split("/")[-1])
-        with connect() as conn:
-            project = active_project(conn)
-            subject = conn.execute(
-                "SELECT id FROM subjects WHERE id = ? AND project_id = ?",
-                (subject_id, project["id"]),
-            ).fetchone()
-            if not subject:
-                raise ValueError("Disciplina não encontrada")
-            close_active_session(conn, project["id"], tz=self.client_timezone())
-            conn.execute("DELETE FROM study_sessions WHERE subject_id = ? AND project_id = ?", (subject_id, project["id"]))
-            conn.execute("DELETE FROM subjects WHERE id = ? AND project_id = ?", (subject_id, project["id"]))
-            self.send_json(state_data(conn, self.client_timezone()))
-
-    def reset_app(self):
-        if DB_PATH.exists():
-            DB_PATH.unlink()
-        init_db()
-        with connect() as conn:
-            self.send_json(state_data(conn, self.client_timezone()))
-
-    def start_timer(self, payload):
-        subject_id = int(payload.get("subject_id") or 0)
-        if subject_id <= 0:
-            raise ValueError("Selecione uma disciplina para iniciar")
-        with connect() as conn:
-            project = active_project(conn)
-            subject = conn.execute(
-                "SELECT id FROM subjects WHERE id = ? AND project_id = ? AND active = 1",
-                (subject_id, project["id"]),
-            ).fetchone()
-            if not subject:
-                raise ValueError("Disciplina inválida")
-            if not active_session(conn, project["id"]):
-                conn.execute(
-                    """
-                    INSERT INTO study_sessions (project_id, subject_id, started_at)
-                    VALUES (?, ?, ?)
-                    """,
-                    (project["id"], subject_id, iso_utc(now_utc())),
-                )
-            self.send_json(state_data(conn, self.client_timezone()))
-
-    def pause_timer(self):
-        with connect() as conn:
-            project = active_project(conn)
-            close_active_session(conn, project["id"], tz=self.client_timezone())
-            self.send_json(state_data(conn, self.client_timezone()))
-
-    def switch_timer(self, payload):
-        subject_id = int(payload.get("subject_id") or 0)
-        if subject_id <= 0:
-            raise ValueError("Selecione uma disciplina")
-        with connect() as conn:
-            project = active_project(conn)
-            subject = conn.execute(
-                "SELECT id FROM subjects WHERE id = ? AND project_id = ? AND active = 1",
-                (subject_id, project["id"]),
-            ).fetchone()
-            if not subject:
-                raise ValueError("Disciplina inválida")
-            running = active_session(conn, project["id"])
-            if running and running["subject_id"] != subject_id:
-                timestamp = now_utc()
-                close_active_session(conn, project["id"], timestamp, self.client_timezone())
-                conn.execute(
-                    """
-                    INSERT INTO study_sessions (project_id, subject_id, started_at)
-                    VALUES (?, ?, ?)
-                    """,
-                    (project["id"], subject_id, iso_utc(timestamp)),
-                )
-            self.send_json(state_data(conn, self.client_timezone()))
+                self.redirect("/")
+            return
+        self.serve_static(path)
 
     def serve_static(self, path):
-        if path in {"", "/"}:
-            path = "/index.html"
-        safe_path = Path(path.lstrip("/"))
-        file_path = (STATIC_DIR / safe_path).resolve()
-        if not str(file_path).startswith(str(STATIC_DIR.resolve())) or not file_path.exists():
+        file_path = (STATIC_DIR / path.lstrip("/")).resolve()
+        if not file_path.is_relative_to(STATIC_DIR.resolve()) or not file_path.is_file():
             self.send_response(404)
             self.end_headers()
             return
-        content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
         data = file_path.read_bytes()
         self.send_response(200)
-        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Type", mimetypes.guess_type(file_path.name)[0] or "application/octet-stream")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
+# ---------------------------------------------------------------------------
+# Manutenção em segundo plano
+# ---------------------------------------------------------------------------
+
 
 def recover_orphaned_sessions():
-    # Sessions with ended_at=NULL from a previous crash. Close at started_at so they
-    # carry zero duration and downtime is never counted as study time.
+    # Sessões com ended_at NULL deixadas por uma queda anterior. Fecha em
+    # started_at (duração zero) para que tempo parado nunca conte como estudo.
     with connect() as conn:
-        rows = conn.execute(
-            "SELECT id FROM study_sessions WHERE ended_at IS NULL"
-        ).fetchall()
+        rows = conn.execute("SELECT id FROM study_sessions WHERE ended_at IS NULL").fetchall()
+        for row in rows:
+            conn.execute("UPDATE study_sessions SET ended_at = started_at WHERE id = ?", (row["id"],))
         if rows:
-            for row in rows:
-                conn.execute(
-                    "UPDATE study_sessions SET ended_at = started_at WHERE id = ?",
-                    (row["id"],),
-                )
-            print(f"[startup] {len(rows)} sessão(ões) interrompida(s) encerrada(s) (máx. {CHECKPOINT_INTERVAL // 60} min perdidos).")
+            print(
+                f"[startup] {len(rows)} sessão(ões) interrompida(s) encerrada(s) "
+                f"(máx. {CHECKPOINT_INTERVAL // 60} min perdidos)."
+            )
 
 
-def _checkpoint_loop():
-    # Rotate active sessions every CHECKPOINT_INTERVAL seconds so the open session
-    # in the DB always covers at most CHECKPOINT_INTERVAL seconds. On crash, at most
-    # that many seconds of the last chunk are lost; everything before is safely closed.
+def purge_expired_tokens():
+    with connect() as conn:
+        conn.execute("DELETE FROM auth_tokens WHERE expires_at <= ?", (iso_utc(now_utc()),))
+
+
+def checkpoint_loop():
+    # Rotaciona as sessões ativas a cada CHECKPOINT_INTERVAL segundos para que a
+    # sessão aberta no banco cubra no máximo esse intervalo. Em caso de queda,
+    # perde-se no máximo o último trecho; todo o resto já está fechado.
     while True:
         time.sleep(CHECKPOINT_INTERVAL)
         try:
@@ -574,8 +868,7 @@ def _checkpoint_loop():
                 for session in sessions:
                     stamp = iso_utc(now_utc())
                     conn.execute(
-                        "UPDATE study_sessions SET ended_at = ? WHERE id = ?",
-                        (stamp, session["id"]),
+                        "UPDATE study_sessions SET ended_at = ? WHERE id = ?", (stamp, session["id"])
                     )
                     conn.execute(
                         "INSERT INTO study_sessions (project_id, subject_id, started_at) VALUES (?, ?, ?)",
@@ -588,7 +881,8 @@ def _checkpoint_loop():
 def main():
     init_db()
     recover_orphaned_sessions()
-    threading.Thread(target=_checkpoint_loop, daemon=True).start()
+    purge_expired_tokens()
+    threading.Thread(target=checkpoint_loop, daemon=True).start()
     server = ThreadingHTTPServer((HOST, PORT), AppHandler)
     print(f"Servidor iniciado em http://{HOST}:{PORT}")
     print(f"Banco de dados: {DB_PATH}")

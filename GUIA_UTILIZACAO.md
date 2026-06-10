@@ -1,97 +1,78 @@
 # Guia Rápido de Utilização
 
-O Contador de Estudos registra o tempo total estudado e separa esse tempo por disciplina.
+O Foco no Estudo registra o tempo estudado rumo às suas metas pessoais, separado por projeto e por disciplina.
+
+## Conta e Login
+
+1. Abra o app no navegador — você verá a página inicial.
+2. Crie sua conta com e-mail e senha (mínimo de 6 caracteres), ou entre se já tiver uma.
+3. Cada usuário tem seus próprios projetos, disciplinas e histórico.
+
+Para sair da conta, use o botão de sair (⏻) no canto superior direito do app.
+
+## Projetos
+
+Cada objetivo seu vira um projeto: "Concurso Receita Federal", "Vestibular Unicamp", "Certificação AWS"… Cada projeto tem suas próprias disciplinas, metas e histórico.
+
+- **Trocar de projeto**: use o seletor na barra superior. Trocar de projeto pausa qualquer timer em andamento.
+- **Criar projeto**: escolha "+ Novo projeto…" no seletor e informe o nome.
+- **Excluir projeto**: nas configurações, botão **Excluir projeto** (apaga disciplinas e histórico; é preciso manter ao menos um projeto).
 
 ## Tela Principal
 
-Na tela inicial você verá:
-
 - velocímetro da meta diária
-- tempo estudado hoje
-- disciplina atual
-- botão para iniciar ou pausar o timer
+- tempo estudado hoje e tempo restante para a meta
+- disciplina atual e botão para iniciar ou pausar o timer
 - resumo de horas por disciplina
 - progresso da meta total do projeto
 - gráficos por dia e por disciplina
 
 ## Primeiro Uso
 
-1. Abra o app no navegador.
-2. Clique no botão de configurações.
-3. Defina o nome do projeto.
-4. Informe a meta diária em horas.
-5. Informe a meta total em horas.
-6. Cadastre, edite ou exclua disciplinas.
-7. Clique em **Salvar**.
+1. Crie sua conta — um primeiro projeto já vem pronto.
+2. Clique no botão de configurações (⚙).
+3. Defina o nome do projeto e as metas diária e total (em horas).
+4. Cadastre, edite ou exclua disciplinas.
+5. Clique em **Salvar**.
 
 ## Iniciar um Estudo
 
 1. Selecione a disciplina que será estudada.
 2. Clique em **Iniciar**.
-3. O tempo começará a contar para a meta diária e para a disciplina selecionada.
-
-O timer só inicia se houver uma disciplina selecionada.
+3. O tempo conta para a meta diária e para a disciplina selecionada.
 
 ## Pausar
 
-Clique em **Pausar**.
-
-O app salva a sessão no banco de dados e atualiza os resumos.
+Clique em **Pausar**. O app salva a sessão e atualiza os resumos.
 
 ## Trocar de Disciplina
 
-Enquanto o timer estiver rodando:
-
-1. Abra o seletor de disciplina.
-2. Escolha outra disciplina.
-
-O app encerra a sessão da disciplina anterior e inicia uma nova sessão para a disciplina escolhida.
+Com o timer rodando, escolha outra disciplina no seletor. O app encerra a sessão anterior e inicia uma nova, sem perder nenhum segundo.
 
 ## Ver Resumos
 
-Use os botões de período na área de resumo:
-
-- **Dia**
-- **Semana**
-- **Mês**
-- **Total**
-
-Os gráficos mostram:
-
-- horas estudadas por dia
-- distribuição por disciplina
-- tabela com horas e participação percentual
+Use os botões de período: **Dia**, **Semana**, **Mês** e **Total**. Os gráficos mostram horas por dia, distribuição por disciplina e a tabela com participação percentual.
 
 ## Configurações
 
 Nas configurações você pode:
 
-- alterar o nome do projeto
-- alterar a meta diária
-- alterar a meta total
-- adicionar disciplinas
-- editar nomes e cores das disciplinas
-- ativar ou desativar disciplinas
-- excluir disciplinas
-- resetar todo o app
+- alterar o nome e as metas do projeto ativo
+- adicionar, editar, ativar/desativar e excluir disciplinas
+- zerar as sessões do projeto
+- excluir o projeto
 
 ## Excluir Disciplina
 
-Na tela de configurações, use o botão de exclusão da disciplina.
-
 Atenção: ao excluir uma disciplina, as sessões registradas nela também são removidas.
 
-## Resetar Tudo
+## Zerar Sessões
 
-Na tela de configurações, clique em **Resetar tudo**.
-
-Isso apaga o banco atual e recria o app com o projeto e disciplinas iniciais.
-
-Use essa opção somente se quiser começar do zero.
+Nas configurações, **Zerar sessões** apaga todo o histórico de estudo do projeto ativo, mantendo disciplinas e metas. Os demais projetos não são afetados.
 
 ## Backup Recomendado
 
-Antes de resetar ou fazer mudanças importantes, faça backup do arquivo:
+Antes de zerar ou excluir projetos, faça backup do arquivo:
 
 ```txt
 data/estudos.sqlite

@@ -23,65 +23,60 @@
 
 ## Overview
 
-**Focus Study Tracker** is a local web application for logging study time in a simple, visual, and persistent way. It is designed to run on a home server, laptop, or workstation — accessible via browser on the same machine or from other devices on the local network.
+**Focus Study Tracker** is a local web application for logging study time toward personal goals — an exam, a certification, a dream. It is designed to run on a home server, laptop, or workstation, accessible via browser on the same machine or from other devices on the local network.
+
+Each user signs in with email and password and can keep **multiple study projects** (e.g. one per exam), each with its own subjects, goals, and history.
 
 With it you can track:
 
-- daily study time;
-- progress against a daily goal;
-- progress against the project's total goal;
+- daily study time and progress against a daily goal;
+- progress against each project's total goal;
 - time distribution across subjects;
 - reports by day, week, month, and total;
-- sessions stored in a local SQLite database.
+- as many projects as you need, fully independent from each other.
 
 ## Features
 
 | Area | What it offers |
 | --- | --- |
+| Accounts | Email + password sign-up and login (sessions via secure cookie) |
+| Projects | Multiple projects per user; create, switch, and delete |
 | Timer | Start, pause, and switch subjects during a session |
-| Subjects | Create, edit, colour-tag, enable, disable, and delete |
-| Goals | Daily goal (hours) and total project goal |
+| Subjects | Create, edit, colour-tag, enable, disable, and delete (per project) |
+| Goals | Daily goal (hours) and total goal per project |
 | Reports | Period summaries, charts, and per-subject share |
 | Persistence | SQLite database at `data/estudos.sqlite` |
-| Local deploy | Run directly with Python or via Docker Compose |
+| Resilience | Automatic checkpoints cap data loss to 5 minutes on a crash |
+| Local deploy | Docker Compose (recommended) or plain Python |
 
 ## UI map
 
 ```txt
-Project
-├── Daily goal
-│   └── today's progress
-├── Timer
-│   ├── current subject
-│   └── start / pause
-├── Reports
-│   ├── day
-│   ├── week
-│   ├── month
-│   └── total
-└── Settings
-    ├── project
-    ├── goals
-    └── subjects
+Landing (public)           App (after login)
+├── Sign in / Sign up      ├── Project selector (+ new project)
+└── Product overview       ├── Daily goal gauge
+                           ├── Timer (subject / start / pause)
+                           ├── Reports (day · week · month · total)
+                           └── Settings (project, goals, subjects)
 ```
 
 ## Technologies
 
-- **Python 3.13** — HTTP server and local API (stdlib only)
-- **SQLite** — session storage
-- **HTML, CSS, JavaScript** — frontend
-- **Docker Compose** — isolated execution
-- No mandatory external Python dependencies when running directly with Python
+- **Python 3.13** — HTTP server, JSON API, and auth (stdlib only, zero dependencies)
+- **SQLite** — users, projects, subjects, and session storage
+- **HTML, CSS, JavaScript** — frontend, no framework, no build step
+- **Docker Compose** — recommended way to run
 
 ## Project structure
 
 ```txt
 .
-├── app.py                 # Server, API, and SQLite layer
+├── app.py                 # Server, API, auth, and SQLite layer (single file)
 ├── static/
-│   ├── index.html         # Main UI
-│   ├── styles.css         # Styles
-│   ├── app.js             # Frontend logic
+│   ├── landing.html       # Public landing page with login/sign-up (self-contained)
+│   ├── index.html         # Main app UI (requires login)
+│   ├── app.js             # App frontend logic
+│   ├── styles.css         # App styles
 │   └── favicon.svg        # Project icon
 ├── data/                  # Local database (gitignored)
 ├── Dockerfile
@@ -93,9 +88,7 @@ Project
 
 ## Installation
 
-### Option 1 — Docker Compose
-
-Recommended for keeping the app running in isolation.
+### Docker Compose (recommended)
 
 ```bash
 docker compose up -d --build
@@ -113,37 +106,35 @@ From another device on the same network, use the host machine's IP:
 http://SERVER_IP:8000
 ```
 
+The container restarts automatically (`restart: unless-stopped`) and ships a healthcheck, so `docker ps` shows whether the app is actually responding. Logs are available with:
+
+```bash
+docker logs -f contador-estudos
+```
+
 To stop:
 
 ```bash
 docker compose down
 ```
 
-### Option 2 — Python directly
-
-Good for development and quick tests.
+### Python directly (development)
 
 ```bash
 python3 app.py
 ```
 
-Open:
-
-```txt
-http://localhost:8000
-```
+Open `http://localhost:8000`. No dependencies to install.
 
 ## How to use
 
-1. Open the app in your browser.
-2. Go to settings.
-3. Set the project name.
-4. Configure daily and total goals.
-5. Register your subjects.
-6. Select a subject.
-7. Click start and study with the timer running.
+1. Open the app and create your account (email + password).
+2. A first project is created for you — open settings to rename it and set your daily and total goals.
+3. Register your subjects (with colours).
+4. Select a subject, hit start, and study.
+5. Use the project selector in the top bar to create or switch between projects ("+ Novo projeto…").
 
-When you pause, the session is saved to the local database and reports update.
+When you pause, the session is saved and all reports update. Switching projects pauses any running timer.
 
 ## Backup
 
@@ -153,7 +144,7 @@ Data lives in:
 data/estudos.sqlite
 ```
 
-Before resetting the app or moving the install to another machine, stop the app and copy that file:
+This same file is used whether you run via Docker (mounted at `/data`) or plain Python. To back it up, stop the app and copy the file:
 
 ```bash
 mkdir -p backups
@@ -162,24 +153,16 @@ cp data/estudos.sqlite backups/estudos-$(date +%F).sqlite
 
 ## Updating
 
-After changing project files, restart the app.
-
-With Docker:
+After changing project files, rebuild and restart:
 
 ```bash
 docker compose up -d --build
 ```
 
-With Python directly:
-
-```bash
-python3 app.py
-```
-
 ## Notes
 
-- Designed for local or home-network use.
-- The SQLite database is not committed to GitHub.
+- Designed for local or home-network use; it serves plain HTTP, so don't expose it directly to the internet without a reverse proxy with TLS.
+- Passwords are stored as PBKDF2-SHA256 hashes; sessions use HttpOnly cookies.
 - The `data/` folder is gitignored to protect personal study records.
 - Detailed usage: see [GUIA_UTILIZACAO.md](GUIA_UTILIZACAO.md) (PT-BR).
 - Step-by-step install: see [GUIA_INSTALACAO.md](GUIA_INSTALACAO.md) (PT-BR).
@@ -187,5 +170,5 @@ python3 app.py
 ---
 
 <p align="center">
-  Turn scattered study hours into visible progress.
+  Turn daily consistency into achievement.
 </p>
